@@ -1,0 +1,36 @@
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.log
+*.tmp
+
+# Distribution
+dist/
+*.zip
+*.crx
+*.pem
+
+# Node modules (if you add build tools later)
+node_modules/
+package-lock.json
+
+# Environment & Secrets (IMPORTANT - don't commit API keys!)
+.env
+.env.local
+config.js
+config.local.js
+secrets.js
+
+# Chrome Extension specific
+*.crx
+*.pem
