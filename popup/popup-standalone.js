@@ -1,18 +1,24 @@
-// Popup script - STANDALONE (No Backend)
+// Popup script - With Backend
 document.addEventListener('DOMContentLoaded', async () => {
   const statusIndicator = document.getElementById('status-indicator');
   const statusText = document.getElementById('status-text');
   const geminiApiKey = document.getElementById('gemini-api-key');
+  const enableTranslation = document.getElementById('enable-translation');
+  const targetLanguage = document.getElementById('target-language');
   const enableQA = document.getElementById('enable-qa');
   const saveButton = document.getElementById('save-settings');
 
   // Load saved settings
   const settings = await chrome.storage.sync.get({
     geminiApiKey: '',
+    enableTranslation: false,
+    targetLanguage: '',
     enableQA: false
   });
 
   geminiApiKey.value = settings.geminiApiKey;
+  enableTranslation.checked = settings.enableTranslation;
+  targetLanguage.value = settings.targetLanguage;
   enableQA.checked = settings.enableQA;
 
   // Check if current tab is YouTube
@@ -27,8 +33,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   saveButton.addEventListener('click', async () => {
     const newSettings = {
       geminiApiKey: geminiApiKey.value.trim(),
+      enableTranslation: enableTranslation.checked,
+      targetLanguage: targetLanguage.value,
       enableQA: enableQA.checked
     };
+
+    // Validation
+    if (enableTranslation.checked && !newSettings.targetLanguage) {
+      alert('Please select a target language for translation');
+      return;
+    }
 
     if (enableQA.checked && !newSettings.geminiApiKey) {
       alert('Please enter your Gemini API key to use Q&A feature');

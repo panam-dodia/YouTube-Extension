@@ -205,9 +205,9 @@ USER QUESTION: ${question}
 
 Provide a clear, concise answer based on the transcript. If the transcript doesn't contain relevant information, say so.`;
 
-    // Call Gemini API
+    // Call Gemini API (using gemini-2.5-flash which is available in v1beta)
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${settings.geminiApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${settings.geminiApiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
