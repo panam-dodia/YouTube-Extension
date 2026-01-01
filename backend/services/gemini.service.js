@@ -36,7 +36,7 @@ ${text}`;
   }
 
   /**
-   * Answer a question based on video transcript
+   * Answer a question based on video transcript AND general knowledge
    */
   async answerQuestion(question, transcript, targetLanguage = 'English') {
     try {
@@ -44,18 +44,21 @@ ${text}`;
         ? transcript.map(seg => seg.text).join(' ')
         : transcript;
 
-      const prompt = `You are a helpful AI assistant answering questions about a YouTube video.
+      const prompt = `You are a helpful AI assistant that can answer questions about a YouTube video AND provide general knowledge.
 
-Video Transcript:
+Video Transcript (for context):
 ${transcriptText}
 
 User's Question: ${question}
 
 Instructions:
-1. Answer based ONLY on the video transcript provided above
-2. If the information is not in the transcript, say "I don't have that information from the video"
-3. Answer in ${targetLanguage} language
-4. Keep your answer concise and clear (2-4 sentences)
+1. First, check if the question is about the video content - if so, answer using the transcript
+2. If the question is asking for more information about something mentioned in the video (like "what does X look like?", "tell me more about X"), provide general knowledge
+3. If the question is completely unrelated to the video, you can still answer it using your general knowledge
+4. When providing general information that's not in the video, you can mention relevant resources or Wikipedia links
+5. Answer in ${targetLanguage} language
+6. Keep your answer concise and helpful (2-5 sentences)
+7. If you mention a visual resource (image, diagram), provide a link format like: "You can see images here: https://en.wikipedia.org/wiki/[Topic]"
 
 Answer:`;
 

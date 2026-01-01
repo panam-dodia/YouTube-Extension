@@ -12,6 +12,11 @@ const PORT = process.env.PORT || 8080;
 app.use(cors());
 app.use(express.json());
 
+// Root route for AWS ELB health checks
+app.get('/', (req, res) => {
+  res.json({ status: 'OK', message: 'TalkBridge Backend', version: '1.0.0' });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'YouTube Extension Backend is running' });

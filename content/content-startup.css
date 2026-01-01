@@ -227,17 +227,58 @@
 }
 
 /* ========== Translation Tab ========== */
-.translation-status {
+.translation-controls {
+  position: sticky;
+  bottom: 0;
   padding: 20px;
   background: white;
-  border-bottom: 1px solid #e5e7eb;
+  border-top: 1px solid #e5e7eb;
+  z-index: 10;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.05);
 }
 
-.translation-status p {
-  margin: 0 0 12px 0;
+#translation-status-text {
+  margin: 0 0 16px 0;
   color: #374151;
   font-size: 14px;
   font-weight: 500;
+  text-align: center;
+}
+
+.playback-controls {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+.control-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.control-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+.control-btn:active {
+  transform: translateY(0);
+}
+
+.control-btn svg {
+  width: 20px;
+  height: 20px;
 }
 
 .progress-bar {
@@ -258,6 +299,8 @@
 
 .translation-list,
 .transcript-list {
+  flex: 1;
+  overflow-y: auto;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -270,15 +313,22 @@
   border-radius: 12px;
   padding: 16px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-  transition: all 0.2s;
-  border: 1px solid #f0f0f0;
+  transition: all 0.3s;
+  border: 2px solid transparent;
 }
 
 .translation-item:hover,
 .transcript-item:hover {
   transform: translateY(-2px);
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08);
+  border-color: #e0e7ff;
+}
+
+.translation-item.active {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
   border-color: #667eea;
+  transform: scale(1.02);
+  box-shadow: 0 8px 24px rgba(102, 126, 234, 0.2);
 }
 
 .timestamp {

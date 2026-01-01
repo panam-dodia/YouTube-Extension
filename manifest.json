@@ -11,7 +11,8 @@
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "http://localhost:8080/*"
+    "http://localhost:8080/*",
+    "http://talkbridge-prod.eba-h9t94spu.us-east-1.elasticbeanstalk.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -24,7 +25,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/watch*"],
-      "js": ["content/content-improved.js"],
+      "js": ["content/content-autoplay.js"],
       "css": ["content/content-startup.css"],
       "run_at": "document_end"
     }

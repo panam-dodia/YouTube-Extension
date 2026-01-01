@@ -29,6 +29,7 @@ venv/
 env/
 .venv/
 ENV/
+aws-env/
 *.pyc
 __pycache__/
 
@@ -38,6 +39,10 @@ __pycache__/
 config.js
 config.local.js
 secrets.js
+
+# AWS Elastic Beanstalk
+.elasticbeanstalk/
+backend/.elasticbeanstalk/
 
 # Chrome Extension specific
 *.crx
