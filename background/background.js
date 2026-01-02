@@ -16,7 +16,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 
     // Open welcome page
     chrome.tabs.create({
-      url: 'https://talkbridge-frontend-149462569558.us-central1.run.app'
+      url: chrome.runtime.getURL('welcome/welcome.html')
     });
   }
 });
