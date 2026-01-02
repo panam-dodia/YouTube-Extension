@@ -1,7 +1,7 @@
 // Content script - Auto-play Translation with YouTube Sync
 console.log('🌉 TalkBridge extension loaded (Auto-play)');
 
-const API_URL = 'http://talkbridge-prod.eba-h9t94spu.us-east-1.elasticbeanstalk.com';
+const API_URL = 'https://talkbridge-backend-1053199504066.us-central1.run.app';
 const BUFFER_SIZE = 3; // Number of segments to buffer before auto-play
 
 // State
@@ -275,6 +275,12 @@ function createUnifiedPanel() {
           <div class="translation-list" id="translation-list"></div>
           <div class="translation-controls">
             <p id="translation-status-text">Preparing smooth translation... For best experience, let it auto-play!</p>
+            <div class="progress-container" id="progress-container" style="display: none;">
+              <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+              </div>
+              <div class="progress-text" id="progress-text">0%</div>
+            </div>
             <div class="playback-controls">
               <button id="play-btn" class="control-btn" style="display: none;">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
@@ -388,6 +394,10 @@ function groupIntoSentences(transcript) {
 
   for (let i = 0; i < transcript.length; i++) {
     const segment = transcript[i];
+    const trimmedText = segment.text.trim();
+
+    // Skip empty segments
+    if (!trimmedText) continue;
 
     // Start new sentence if this is the first segment
     if (currentSentence.text === '') {
@@ -395,20 +405,24 @@ function groupIntoSentences(transcript) {
     }
 
     // Add segment to current sentence
-    currentSentence.text += (currentSentence.text ? ' ' : '') + segment.text;
+    currentSentence.text += (currentSentence.text ? ' ' : '') + trimmedText;
     currentSentence.duration += segment.duration;
     currentSentence.segmentIndices.push(i);
 
     // Check if this segment ends a sentence (ends with . ! ? or is last segment)
-    const endsWithPunctuation = /[.!?]$/.test(segment.text.trim());
+    const endsWithPunctuation = /[.!?]$/.test(trimmedText);
     const isLastSegment = i === transcript.length - 1;
 
-    // Also end sentence if it's getting too long (20+ segments or 60+ seconds)
-    const tooLong = currentSentence.segmentIndices.length >= 20 || currentSentence.duration >= 60;
+    // Also end sentence if it's getting too long (15+ segments or 50+ seconds)
+    const tooLong = currentSentence.segmentIndices.length >= 15 || currentSentence.duration >= 50;
 
     if (endsWithPunctuation || isLastSegment || tooLong) {
-      console.log(`📝 Sentence ${sentences.length}: "${currentSentence.text.substring(0, 50)}..." (${currentSentence.segmentIndices.length} segments, ${currentSentence.duration.toFixed(1)}s)`);
-      sentences.push({ ...currentSentence });
+      // Only add if we have content
+      if (currentSentence.text.trim()) {
+        console.log(`📝 Sentence ${sentences.length}: "${currentSentence.text.substring(0, 60)}..." (${currentSentence.segmentIndices.length} segments, ${currentSentence.duration.toFixed(1)}s, start: ${currentSentence.start.toFixed(1)}s)`);
+        sentences.push({ ...currentSentence });
+      }
+      // Reset for next sentence
       currentSentence = {
         text: '',
         start: 0,
@@ -419,7 +433,23 @@ function groupIntoSentences(transcript) {
   }
 
   console.log(`📝 Grouped ${transcript.length} segments into ${sentences.length} sentences`);
-  return sentences;
+
+  // Verify no duplicates by checking timestamps
+  const uniqueSentences = [];
+  const seenStarts = new Set();
+
+  for (const sentence of sentences) {
+    const startKey = Math.floor(sentence.start);
+    if (!seenStarts.has(startKey)) {
+      seenStarts.add(startKey);
+      uniqueSentences.push(sentence);
+    } else {
+      console.warn(`⚠️ Skipping duplicate sentence at ${sentence.start}s: "${sentence.text.substring(0, 40)}..."`);
+    }
+  }
+
+  console.log(`✅ Final unique sentences: ${uniqueSentences.length}`);
+  return uniqueSentences;
 }
 
 // Progressive translation with auto-play
@@ -427,6 +457,9 @@ async function startProgressiveTranslation() {
   isTranslating = true;
   const statusText = document.getElementById('translation-status-text');
   const translationList = document.getElementById('translation-list');
+  const progressContainer = document.getElementById('progress-container');
+  const progressFill = document.getElementById('progress-fill');
+  const progressText = document.getElementById('progress-text');
 
   // Clear existing translations to prevent duplicates
   if (translationList) {
@@ -437,11 +470,21 @@ async function startProgressiveTranslation() {
   currentSegmentIndex = 0;
   hasAutoStarted = false;
 
+  // Show progress bar
+  if (progressContainer) {
+    progressContainer.style.display = 'block';
+  }
+
   // Group segments into complete sentences
   groupedSentences = groupIntoSentences(transcript);
 
   for (let i = 0; i < groupedSentences.length && isTranslating; i++) {
     const sentence = groupedSentences[i];
+
+    // Update progress
+    const progress = Math.round(((i + 1) / groupedSentences.length) * 100);
+    if (progressFill) progressFill.style.width = `${progress}%`;
+    if (progressText) progressText.textContent = `${progress}%`;
 
     try {
       // Translate complete sentence
@@ -497,6 +540,11 @@ async function startProgressiveTranslation() {
 
   if (statusText && isTranslating) {
     statusText.textContent = `Translation complete!`;
+  }
+
+  // Hide progress bar when complete
+  if (progressContainer) {
+    progressContainer.style.display = 'none';
   }
 }
 
@@ -707,7 +755,7 @@ async function sendQuestion() {
       body: JSON.stringify({
         question,
         transcript: transcriptText,
-        targetLanguage: 'English'
+        targetLanguage: settings.targetLanguage || 'English'
       })
     });
 

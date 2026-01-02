@@ -1,25 +1,60 @@
-// Popup script - With Backend
+// Popup script - Trial + Waitlist Model
+const API_URL = 'https://talkbridge-backend-1053199504066.us-central1.run.app';
+const TRIAL_DAYS = 7;
+const DAILY_LIMIT_MINUTES = 30;
+
 document.addEventListener('DOMContentLoaded', async () => {
   const statusIndicator = document.getElementById('status-indicator');
   const statusText = document.getElementById('status-text');
-  const geminiApiKey = document.getElementById('gemini-api-key');
+  const trialDaysEl = document.getElementById('trial-days');
+  const usageInfoEl = document.getElementById('usage-info');
+  const trialStatusEl = document.getElementById('trial-status');
+  const settingsSection = document.getElementById('settings-section');
+  const actionsSection = document.getElementById('actions-section');
+  const waitlistSection = document.getElementById('waitlist-section');
+  const waitlistSuccess = document.getElementById('waitlist-success');
   const enableTranslation = document.getElementById('enable-translation');
   const targetLanguage = document.getElementById('target-language');
   const enableQA = document.getElementById('enable-qa');
   const saveButton = document.getElementById('save-settings');
+  const joinWaitlistBtn = document.getElementById('join-waitlist');
+  const waitlistEmailInput = document.getElementById('waitlist-email');
 
-  // Load saved settings
-  const settings = await chrome.storage.sync.get({
-    geminiApiKey: '',
-    enableTranslation: false,
-    targetLanguage: '',
-    enableQA: false
+  // Initialize trial if first time
+  let trialData = await chrome.storage.local.get({
+    installDate: null,
+    dailyUsage: {},
+    waitlistEmail: null,
+    isRegistered: false
   });
 
-  geminiApiKey.value = settings.geminiApiKey;
-  enableTranslation.checked = settings.enableTranslation;
-  targetLanguage.value = settings.targetLanguage;
-  enableQA.checked = settings.enableQA;
+  if (!trialData.installDate) {
+    trialData.installDate = Date.now();
+    await chrome.storage.local.set({ installDate: trialData.installDate });
+  }
+
+  // Calculate trial status
+  const daysSinceInstall = Math.floor((Date.now() - trialData.installDate) / (1000 * 60 * 60 * 24));
+  const daysRemaining = TRIAL_DAYS - daysSinceInstall;
+  const isTrialActive = daysRemaining > 0;
+  const isRegistered = trialData.isRegistered;
+
+  // Get today's usage
+  const today = new Date().toISOString().split('T')[0];
+  const todayUsage = trialData.dailyUsage[today] || 0;
+  const usageMinutes = Math.floor(todayUsage / 60);
+
+  // Update UI based on status
+  if (isRegistered) {
+    // User already registered - show success message
+    showWaitlistSuccess(trialData.waitlistEmail);
+  } else if (!isTrialActive) {
+    // Trial expired - show waitlist registration
+    showWaitlist();
+  } else {
+    // Trial active - show settings
+    showSettings(daysRemaining, usageMinutes);
+  }
 
   // Check if current tab is YouTube
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -29,10 +64,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     statusText.textContent = 'Active on YouTube';
   }
 
+  // Load saved settings
+  const settings = await chrome.storage.sync.get({
+    enableTranslation: false,
+    targetLanguage: '',
+    enableQA: false
+  });
+
+  enableTranslation.checked = settings.enableTranslation;
+  targetLanguage.value = settings.targetLanguage;
+  enableQA.checked = settings.enableQA;
+
   // Save settings
   saveButton.addEventListener('click', async () => {
+    if (!isTrialActive && !isRegistered) {
+      alert('Your trial has expired. Please join the waitlist!');
+      return;
+    }
+
     const newSettings = {
-      geminiApiKey: geminiApiKey.value.trim(),
       enableTranslation: enableTranslation.checked,
       targetLanguage: targetLanguage.value,
       enableQA: enableQA.checked
@@ -41,11 +91,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Validation
     if (enableTranslation.checked && !newSettings.targetLanguage) {
       alert('Please select a target language for translation');
-      return;
-    }
-
-    if (enableQA.checked && !newSettings.geminiApiKey) {
-      alert('Please enter your Gemini API key to use Q&A feature');
       return;
     }
 
@@ -69,4 +114,72 @@ document.addEventListener('DOMContentLoaded', async () => {
       saveButton.style.background = '';
     }, 1500);
   });
+
+  // Join waitlist
+  joinWaitlistBtn.addEventListener('click', async () => {
+    const email = waitlistEmailInput.value.trim();
+
+    if (!email || !email.includes('@')) {
+      alert('Please enter a valid email address');
+      return;
+    }
+
+    try {
+      joinWaitlistBtn.textContent = 'Joining...';
+      joinWaitlistBtn.disabled = true;
+
+      const response = await fetch(`${API_URL}/api/waitlist/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to register');
+      }
+
+      // Save registration locally
+      await chrome.storage.local.set({
+        waitlistEmail: email,
+        isRegistered: true
+      });
+
+      // Show success message
+      showWaitlistSuccess(email);
+
+    } catch (error) {
+      console.error('Waitlist registration error:', error);
+      alert('Failed to join waitlist. Please try again.');
+      joinWaitlistBtn.textContent = 'Join Waitlist';
+      joinWaitlistBtn.disabled = false;
+    }
+  });
+
+  function showSettings(daysRemaining, usageMinutes) {
+    trialStatusEl.style.display = 'block';
+    settingsSection.style.display = 'block';
+    actionsSection.style.display = 'block';
+    waitlistSection.style.display = 'none';
+    waitlistSuccess.style.display = 'none';
+
+    trialDaysEl.textContent = `🎉 Free Trial: ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''} remaining`;
+    usageInfoEl.textContent = `📊 Today: ${usageMinutes} / ${DAILY_LIMIT_MINUTES} minutes used`;
+  }
+
+  function showWaitlist() {
+    trialStatusEl.style.display = 'none';
+    settingsSection.style.display = 'none';
+    actionsSection.style.display = 'none';
+    waitlistSection.style.display = 'block';
+    waitlistSuccess.style.display = 'none';
+  }
+
+  function showWaitlistSuccess(email) {
+    trialStatusEl.style.display = 'none';
+    settingsSection.style.display = 'none';
+    actionsSection.style.display = 'none';
+    waitlistSection.style.display = 'none';
+    waitlistSuccess.style.display = 'block';
+    document.getElementById('registered-email').textContent = email;
+  }
 });

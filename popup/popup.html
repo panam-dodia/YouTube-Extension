@@ -18,13 +18,34 @@
       <span id="status-text">Not on YouTube</span>
     </div>
 
-    <div class="settings">
-      <div class="setting-group">
-        <label for="gemini-api-key">Gemini API Key:</label>
-        <input type="password" id="gemini-api-key" placeholder="Enter your Gemini API key">
-        <small><a href="https://makersuite.google.com/app/apikey" target="_blank">Get free API key</a></small>
+    <!-- Trial Status -->
+    <div id="trial-status" class="trial-banner">
+      <div class="trial-info">
+        <span id="trial-days">🎉 Free Trial: 7 days remaining</span>
+        <span id="usage-info">📊 Today: 0 / 30 minutes used</span>
       </div>
+    </div>
 
+    <!-- Waitlist Registration (hidden by default) -->
+    <div id="waitlist-section" class="waitlist-section" style="display: none;">
+      <h2>🚀 Join the Waitlist</h2>
+      <p>Your trial has ended! Register to get early access when we launch.</p>
+      <div class="form-group">
+        <input type="email" id="waitlist-email" placeholder="Enter your email" required>
+        <button id="join-waitlist" class="btn btn-primary">Join Waitlist</button>
+      </div>
+      <p class="launch-date">Expected Launch: March 2026</p>
+    </div>
+
+    <!-- Waitlist Success (hidden by default) -->
+    <div id="waitlist-success" class="waitlist-success" style="display: none;">
+      <h2>🎉 You're In!</h2>
+      <p>Thanks for joining! We'll email you when we launch.</p>
+      <p class="user-email" id="registered-email"></p>
+    </div>
+
+    <!-- Settings (shown during trial) -->
+    <div id="settings-section" class="settings">
       <div class="setting-group">
         <label>
           <input type="checkbox" id="enable-translation">
@@ -58,7 +79,7 @@
       </div>
     </div>
 
-    <div class="actions">
+    <div id="actions-section" class="actions">
       <button id="save-settings" class="btn btn-primary">Save Settings</button>
     </div>
 

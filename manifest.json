@@ -11,8 +11,7 @@
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "http://localhost:8080/*",
-    "http://talkbridge-prod.eba-h9t94spu.us-east-1.elasticbeanstalk.com/*"
+    "https://talkbridge-backend-1053199504066.us-central1.run.app/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
