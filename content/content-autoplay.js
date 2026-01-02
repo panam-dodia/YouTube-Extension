@@ -26,6 +26,7 @@ let hasAutoStarted = false;
 let youtubeVideo = null;
 let playbackQueue = [];
 let groupedSentences = [];
+let isSyncingPlayback = false; // Flag to prevent infinite loops when syncing video/audio
 
 // Initialize extension
 async function init() {
@@ -37,14 +38,24 @@ async function init() {
   });
   settings = stored;
 
-  currentVideoId = getVideoId();
-  if (!currentVideoId) return;
+  // Wait for YouTube to be ready and check for video
+  const checkVideo = () => {
+    currentVideoId = getVideoId();
+    if (currentVideoId && !loadingInProgress) {
+      console.log('Current video:', currentVideoId);
+      if (settings.enableQA || (settings.enableTranslation && settings.targetLanguage)) {
+        loadingInProgress = true;
+        loadVideoFeatures().finally(() => {
+          loadingInProgress = false;
+        });
+      }
+    } else if (!currentVideoId) {
+      // Retry if no video ID yet (page still loading)
+      setTimeout(checkVideo, 500);
+    }
+  };
 
-  console.log('Current video:', currentVideoId);
-
-  if ((settings.enableQA && settings.geminiApiKey) || (settings.enableTranslation && settings.targetLanguage)) {
-    await loadVideoFeatures();
-  }
+  checkVideo();
 }
 
 function getVideoId() {
@@ -76,6 +87,12 @@ async function loadVideoFeatures() {
 
     // Get YouTube player reference
     getYouTubePlayer();
+
+    // Mute YouTube video immediately when translation is enabled
+    if (youtubeVideo && settings.enableTranslation && settings.targetLanguage) {
+      console.log('🔇 Muting YouTube video for translation');
+      youtubeVideo.muted = true;
+    }
 
     // Create unified panel
     createUnifiedPanel();
@@ -175,6 +192,9 @@ async function detectSpeakerGender() {
   }
 }
 
+let lastKnownTime = 0;
+let isSeeking = false;
+
 function getYouTubePlayer() {
   youtubeVideo = document.querySelector('video');
   if (youtubeVideo) {
@@ -182,16 +202,111 @@ function getYouTubePlayer() {
 
     // Add event listeners for YouTube play/pause sync
     youtubeVideo.addEventListener('pause', () => {
-      if (isPlaying) {
+      if (!isSyncingPlayback && isPlaying && !isSeeking) {
         console.log('🎬 YouTube paused - pausing translation');
         pausePlayback();
       }
     });
 
     youtubeVideo.addEventListener('play', () => {
-      if (!isPlaying && audioCache.size > 0) {
+      if (!isSyncingPlayback && !isPlaying && audioCache.size > 0 && !isSeeking) {
         console.log('▶️ YouTube playing - resuming translation');
         resumePlayback();
+      }
+    });
+
+    // Keep video muted when translation is active
+    youtubeVideo.addEventListener('volumechange', () => {
+      // Keep muted as long as translation feature is enabled
+      if (settings.enableTranslation && settings.targetLanguage && !youtubeVideo.muted) {
+        console.log('🔇 Keeping YouTube video muted during translation');
+        youtubeVideo.muted = true;
+      }
+    });
+
+    // Handle seeking (fast forward/backward)
+    youtubeVideo.addEventListener('seeking', () => {
+      isSeeking = true;
+      console.log('⏩ User is seeking...');
+      if (currentAudio) {
+        currentAudio.pause();
+      }
+    });
+
+    youtubeVideo.addEventListener('seeked', async () => {
+      const currentTime = youtubeVideo.currentTime;
+      console.log(`⏩ Seeked to ${currentTime.toFixed(1)}s`);
+
+      // Find the sentence index and audio offset for this timestamp
+      const result = findSentenceIndexByTime(currentTime);
+
+      if (result.sentenceIndex !== -1) {
+        console.log(`🎯 Jumping to sentence ${result.sentenceIndex} with ${result.audioOffset.toFixed(1)}s offset`);
+
+        // Check if we have enough buffered segments around this position
+        const needsBuffering = !hasEnoughBuffer(result.sentenceIndex);
+        const wasPlaying = isPlaying;
+
+        if (needsBuffering) {
+          // Pause video and show buffering UI
+          youtubeVideo.pause();
+          const statusText = document.getElementById('translation-status-text');
+          if (statusText) {
+            statusText.textContent = 'Processing translation...';
+          }
+
+          // Buffer the segments
+          await bufferAroundPosition(result.sentenceIndex);
+
+          // Buffering complete - status remains "Translation complete"
+
+          // Auto-resume video after buffering if it was playing
+          if (wasPlaying) {
+            youtubeVideo.muted = true;
+            youtubeVideo.play().catch(err => console.log('Video play error after buffering:', err));
+          }
+        }
+
+        // Jump to the new position
+        currentSegmentIndex = result.sentenceIndex;
+
+        // Resume playback if we were playing, starting from the audio offset
+        if (wasPlaying) {
+          if (currentAudio) {
+            currentAudio.pause();
+          }
+          await playNextSegment(result.audioOffset);
+        } else {
+          highlightSegment(result.sentenceIndex);
+        }
+      }
+
+      isSeeking = false;
+      lastKnownTime = currentTime;
+    });
+
+    // Monitor time to keep audio synchronized
+    youtubeVideo.addEventListener('timeupdate', () => {
+      if (!isSeeking && isPlaying) {
+        const currentTime = youtubeVideo.currentTime;
+
+        // Check if we're still in sync (within the current sentence's time range)
+        if (currentSegmentIndex < groupedSentences.length) {
+          const currentSentence = groupedSentences[currentSegmentIndex];
+          const sentenceEnd = currentSentence.start + currentSentence.duration;
+
+          // If video time has drifted too far from current sentence, resync
+          if (currentTime < currentSentence.start - 1 || currentTime > sentenceEnd + 1) {
+            console.log(`⚠️ Audio out of sync. Video: ${currentTime.toFixed(1)}s, Sentence: ${currentSentence.start.toFixed(1)}-${sentenceEnd.toFixed(1)}s`);
+            // We'll let the natural playback continue, but highlight the correct segment
+            const result = findSentenceIndexByTime(currentTime);
+            if (result.sentenceIndex !== -1) {
+              highlightSegment(result.sentenceIndex);
+            }
+          }
+        }
+
+        lastKnownTime = currentTime;
       }
     });
   }
@@ -208,7 +323,7 @@ function createUnifiedPanel() {
   if (existingPanel) existingPanel.remove();
 
   const hasTranslation = settings.enableTranslation && settings.targetLanguage;
-  const hasQA = settings.enableQA && settings.geminiApiKey;
+  const hasQA = settings.enableQA; // API key is on backend, not required from user
 
   // Create FAB
   const fab = document.createElement('div');
@@ -308,7 +423,7 @@ function createUnifiedPanel() {
           <div class="qa-messages" id="qa-messages">
             <div class="qa-message bot">
               <div class="message-avatar">🤖</div>
-              <div class="message-content">Hi! Ask me anything about this video.</div>
+              <div class="message-content" id="qa-greeting">Hey! Got questions about this video or beyond? I'm all ears!</div>
             </div>
           </div>
           <div class="qa-input-container">
@@ -325,6 +440,11 @@ function createUnifiedPanel() {
   `;
 
   document.body.appendChild(unifiedPanel);
+
+  // Translate Q&A greeting message to user's language
+  if (hasQA && settings.targetLanguage) {
+    translateGreeting();
+  }
 
   // Populate transcript tab
   const transcriptList = document.getElementById('transcript-list');
@@ -434,14 +554,18 @@ function groupIntoSentences(transcript) {
 
   console.log(`📝 Grouped ${transcript.length} segments into ${sentences.length} sentences`);
 
-  // Verify no duplicates by checking timestamps
+  // Verify no duplicates by checking both timestamps and text similarity
   const uniqueSentences = [];
   const seenStarts = new Set();
+  const seenTexts = new Set();
 
   for (const sentence of sentences) {
     const startKey = Math.floor(sentence.start);
-    if (!seenStarts.has(startKey)) {
+    const textKey = sentence.text.substring(0, 50).toLowerCase(); // Use first 50 chars for similarity check
+
+    if (!seenStarts.has(startKey) && !seenTexts.has(textKey)) {
       seenStarts.add(startKey);
+      seenTexts.add(textKey);
       uniqueSentences.push(sentence);
     } else {
       console.warn(`⚠️ Skipping duplicate sentence at ${sentence.start}s: "${sentence.text.substring(0, 40)}..."`);
@@ -470,9 +594,12 @@ async function startProgressiveTranslation() {
   currentSegmentIndex = 0;
   hasAutoStarted = false;
 
-  // Show progress bar
+  // Show progress bar and update status
   if (progressContainer) {
     progressContainer.style.display = 'block';
+  }
+  if (statusText) {
+    statusText.textContent = 'Processing translation...';
   }
 
   // Group segments into complete sentences
@@ -501,10 +628,6 @@ async function startProgressiveTranslation() {
         const data = await response.json();
         translations.set(i, data.translatedText);
 
-        console.log(`🔄 Sentence ${i}:`);
-        console.log(`   Original: "${sentence.text}"`);
-        console.log(`   Translated: "${data.translatedText}"`);
-
         // Add to UI
         addTranslationItem(i, data.translatedText, translationList, sentence);
 
@@ -517,7 +640,7 @@ async function startProgressiveTranslation() {
           console.log(`🎬 Buffer ready! Starting auto-play with ${audioCache.size} sentences`);
           hasAutoStarted = true;
           if (statusText) {
-            statusText.textContent = `Playing translation...`;
+            statusText.textContent = `Translation complete`;
           }
           autoStartPlayback(); // Don't await - start in parallel
         }
@@ -559,7 +682,22 @@ function addTranslationItem(index, translatedText, container, sentence) {
     <div class="translated-text">${translatedText}</div>
   `;
 
-  container.appendChild(item);
+  // Insert in correct chronological order based on index
+  const existingItems = container.querySelectorAll('.translation-item');
+  let inserted = false;
+
+  for (let i = 0; i < existingItems.length; i++) {
+    const existingIndex = parseInt(existingItems[i].dataset.index);
+    if (index < existingIndex) {
+      container.insertBefore(item, existingItems[i]);
+      inserted = true;
+      break;
+    }
+  }
+
+  if (!inserted) {
+    container.appendChild(item);
+  }
 }
 
 function addTranscriptItem(index, segment, container) {
@@ -574,6 +712,30 @@ function addTranscriptItem(index, segment, container) {
   `;
 
   container.appendChild(item);
+}
+
+async function translateGreeting() {
+  try {
+    const greetingElement = document.getElementById('qa-greeting');
+    if (!greetingElement) return;
+
+    const response = await fetch(`${API_URL}/api/translation/translate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Hey! Got questions about this video or beyond? I\'m all ears!',
+        targetLanguage: settings.targetLanguage
+      })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      greetingElement.textContent = data.translatedText;
+    }
+  } catch (error) {
+    console.error('Error translating greeting:', error);
+    // Keep English greeting if translation fails
+  }
 }
 
 async function generateAudio(index, translatedText) {
@@ -604,6 +766,27 @@ async function generateAudio(index, translatedText) {
 async function autoStartPlayback() {
   console.log(`🎬 autoStartPlayback() called, youtubeVideo=${!!youtubeVideo}`);
 
+  let startAudioOffset = 0;
+
+  // Determine starting position based on current video time
+  if (youtubeVideo && youtubeVideo.currentTime > 0) {
+    const videoTime = youtubeVideo.currentTime;
+    const result = findSentenceIndexByTime(videoTime);
+
+    if (result.sentenceIndex !== -1) {
+      console.log(`📍 Video is at ${videoTime.toFixed(1)}s, starting from sentence ${result.sentenceIndex} with ${result.audioOffset.toFixed(1)}s offset`);
+      currentSegmentIndex = result.sentenceIndex;
+      startAudioOffset = result.audioOffset;
+
+      // Check if we need to buffer this position
+      if (!hasEnoughBuffer(result.sentenceIndex)) {
+        console.log(`⏸️ Need to buffer position ${result.sentenceIndex}`);
+        youtubeVideo.pause();
+        await bufferAroundPosition(result.sentenceIndex);
+      }
+    }
+  }
+
   if (youtubeVideo) {
     console.log(`🔇 Muting YouTube video`);
     youtubeVideo.muted = true;
@@ -624,11 +807,11 @@ async function autoStartPlayback() {
   if (pauseBtn) pauseBtn.style.display = 'flex';
 
   isPlaying = true;
-  console.log(`▶️ Starting playback from segment ${currentSegmentIndex}`);
-  await playNextSegment();
+  console.log(`▶️ Starting playback from segment ${currentSegmentIndex} with ${startAudioOffset.toFixed(1)}s offset`);
+  await playNextSegment(startAudioOffset);
 }
 
-async function playNextSegment() {
+async function playNextSegment(audioOffset = 0) {
   if (!isPlaying || currentSegmentIndex >= groupedSentences.length) {
     return;
   }
@@ -639,7 +822,7 @@ async function playNextSegment() {
     if (youtubeVideo) {
       youtubeVideo.pause();
     }
-    document.getElementById('translation-status-text').textContent = 'Buffering...';
+    // Keep status as is during buffering
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 
@@ -664,6 +847,12 @@ async function playNextSegment() {
   const audioURL = URL.createObjectURL(audioBlob);
   currentAudio = new Audio(audioURL);
 
+  // Start from the specified offset (for word-level sync)
+  if (audioOffset > 0) {
+    currentAudio.currentTime = audioOffset;
+    console.log(`⏭️ Starting audio from ${audioOffset.toFixed(1)}s offset`);
+  }
+
   currentAudio.play();
 
   // Wait for audio to finish
@@ -682,8 +871,8 @@ async function playNextSegment() {
     };
   });
 
-  // Continue to next segment
-  await playNextSegment();
+  // Continue to next segment (no offset for subsequent segments)
+  await playNextSegment(0);
 }
 
 function highlightSegment(index) {
@@ -701,34 +890,209 @@ function highlightSegment(index) {
 }
 
 function pausePlayback() {
+  if (isSyncingPlayback) return; // Prevent infinite loop
+  isSyncingPlayback = true;
+
   isPlaying = false;
-  if (currentAudio) {
+
+  if (currentAudio && !currentAudio.paused) {
     currentAudio.pause();
   }
-  if (youtubeVideo) {
+  if (youtubeVideo && !youtubeVideo.paused) {
     youtubeVideo.pause();
   }
 
-  document.getElementById('play-btn').style.display = 'flex';
-  document.getElementById('pause-btn').style.display = 'none';
+  const playBtn = document.getElementById('play-btn');
+  const pauseBtn = document.getElementById('pause-btn');
+  if (playBtn) playBtn.style.display = 'flex';
+  if (pauseBtn) pauseBtn.style.display = 'none';
+
+  setTimeout(() => {
+    isSyncingPlayback = false;
+  }, 100);
 }
 
 function resumePlayback() {
+  if (isSyncingPlayback) return; // Prevent infinite loop
+  isSyncingPlayback = true;
+
   isPlaying = true;
-  if (currentAudio) {
-    currentAudio.play();
+
+  if (currentAudio && currentAudio.paused) {
+    currentAudio.play().catch(err => console.log('Audio play error:', err));
   }
-  if (youtubeVideo) {
+  if (youtubeVideo && youtubeVideo.paused) {
     youtubeVideo.muted = true;
-    youtubeVideo.play();
+    youtubeVideo.play().catch(err => console.log('Video play error:', err));
   }
 
-  document.getElementById('play-btn').style.display = 'none';
-  document.getElementById('pause-btn').style.display = 'flex';
+  const playBtn = document.getElementById('play-btn');
+  const pauseBtn = document.getElementById('pause-btn');
+  if (playBtn) playBtn.style.display = 'none';
+  if (pauseBtn) pauseBtn.style.display = 'flex';
 
   if (!currentAudio) {
     playNextSegment();
   }
+
+  setTimeout(() => {
+    isSyncingPlayback = false;
+  }, 100);
+}
+
+// Find which sentence index corresponds to a video timestamp
+// Returns { sentenceIndex, audioOffset } where audioOffset is how many seconds into the audio to start
+function findSentenceIndexByTime(timeInSeconds) {
+  if (!groupedSentences || groupedSentences.length === 0) {
+    console.warn('⚠️ No grouped sentences available');
+    return { sentenceIndex: -1, audioOffset: 0 };
+  }
+
+  // Find the sentence whose start time is closest to (but not after) the current time
+  let bestIndex = 0;
+  let bestStartTime = groupedSentences[0].start;
+
+  console.log(`🔍 Searching for time ${timeInSeconds.toFixed(1)}s among ${groupedSentences.length} sentences`);
+
+  for (let i = 0; i < groupedSentences.length; i++) {
+    const sentence = groupedSentences[i];
+
+    // If this sentence starts before or at the current time, and is closer than our best match
+    if (sentence.start <= timeInSeconds && sentence.start >= bestStartTime) {
+      bestIndex = i;
+      bestStartTime = sentence.start;
+      console.log(`  → Candidate: Sentence ${i} starts at ${sentence.start.toFixed(1)}s`);
+    }
+
+    // If we've passed the current time, stop searching
+    if (sentence.start > timeInSeconds) {
+      console.log(`  → Stopping search at sentence ${i} (starts at ${sentence.start.toFixed(1)}s > ${timeInSeconds.toFixed(1)}s)`);
+      break;
+    }
+  }
+
+  // Calculate how far into the sentence we are (for word-level sync)
+  const sentence = groupedSentences[bestIndex];
+  const timeIntoSentence = timeInSeconds - sentence.start;
+
+  // Calculate audio offset based on position in sentence
+  // We'll use the ratio of time into the sentence to estimate where in the audio we should be
+  const audioOffset = Math.max(0, Math.min(timeIntoSentence, sentence.duration));
+
+  console.log(`✅ Final: Time ${timeInSeconds.toFixed(1)}s → Sentence ${bestIndex} (starts at ${bestStartTime.toFixed(1)}s, duration ${sentence.duration.toFixed(1)}s) + ${audioOffset.toFixed(1)}s offset`);
+  return { sentenceIndex: bestIndex, audioOffset: audioOffset };
+}
+
+// Check if we have enough buffered segments around a position
+function hasEnoughBuffer(targetIndex, bufferSize = 3) {
+  if (!groupedSentences || targetIndex < 0 || targetIndex >= groupedSentences.length) {
+    return false;
+  }
+
+  // Check if we have the target segment
+  if (!audioCache.has(targetIndex) || !translations.has(targetIndex)) {
+    return false;
+  }
+
+  // Check if we have a few segments ahead buffered
+  let bufferedCount = 0;
+  for (let i = targetIndex; i < Math.min(targetIndex + bufferSize, groupedSentences.length); i++) {
+    if (audioCache.has(i) && translations.has(i)) {
+      bufferedCount++;
+    }
+  }
+
+  return bufferedCount >= Math.min(bufferSize, groupedSentences.length - targetIndex);
+}
+
+// Buffer segments around a specific position with progress bar
+async function bufferAroundPosition(targetIndex, bufferSize = 5) {
+  console.log(`🔄 Buffering around position ${targetIndex}...`);
+
+  const statusText = document.getElementById('translation-status-text');
+  const progressContainer = document.getElementById('progress-container');
+  const progressFill = document.getElementById('progress-fill');
+  const progressText = document.getElementById('progress-text');
+
+  // Show buffering message and progress bar
+  if (statusText) statusText.textContent = 'Processing translation...';
+  if (progressContainer) progressContainer.style.display = 'block';
+
+  const startIndex = targetIndex;
+  const endIndex = Math.min(targetIndex + bufferSize, groupedSentences.length);
+  const totalToBuffer = endIndex - startIndex;
+  let buffered = 0;
+
+  for (let i = startIndex; i < endIndex; i++) {
+    // Skip if already cached
+    if (audioCache.has(i) && translations.has(i)) {
+      buffered++;
+      continue;
+    }
+
+    const sentence = groupedSentences[i];
+
+    try {
+      // Translate if not already translated
+      if (!translations.has(i)) {
+        const response = await fetch(`${API_URL}/api/translation/translate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: sentence.text,
+            targetLanguage: settings.targetLanguage
+          })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          translations.set(i, data.translatedText);
+          console.log(`📝 Buffered translation ${i}: "${data.translatedText.substring(0, 40)}..."`);
+
+          // Add to UI
+          const translationList = document.getElementById('translation-list');
+          if (translationList) {
+            addTranslationItem(i, data.translatedText, translationList, sentence);
+          }
+        }
+      }
+
+      // Get TTS audio if not already cached
+      if (!audioCache.has(i) && translations.has(i)) {
+        const ttsResponse = await fetch(`${API_URL}/api/translation/text-to-speech`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: translations.get(i),
+            gender: detectedGender,
+            language: settings.targetLanguage
+          })
+        });
+
+        if (ttsResponse.ok) {
+          const audioBlob = await ttsResponse.blob();
+          audioCache.set(i, audioBlob);
+          console.log(`🎵 Buffered audio ${i}`);
+        }
+      }
+
+      buffered++;
+
+      // Update progress bar
+      const progress = Math.round((buffered / totalToBuffer) * 100);
+      if (progressFill) progressFill.style.width = `${progress}%`;
+      if (progressText) progressText.textContent = `${progress}%`;
+
+    } catch (error) {
+      console.error(`❌ Error buffering segment ${i}:`, error);
+    }
+  }
+
+  // Hide progress bar
+  if (progressContainer) progressContainer.style.display = 'none';
+  if (statusText) statusText.textContent = 'Translation complete';
+
+  console.log(`✅ Buffered ${buffered} segments around position ${targetIndex}`);
 }
 
 function formatTime(seconds) {
@@ -823,19 +1187,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// Video change detection
+// Video change detection - using both interval and navigation events
 let lastVideoId = null;
-setInterval(() => {
+let loadingInProgress = false; // Prevent duplicate calls
+
+function handleVideoChange() {
   const videoId = getVideoId();
-  if (videoId && videoId !== lastVideoId) {
+  if (videoId && videoId !== lastVideoId && !loadingInProgress) {
     lastVideoId = videoId;
     currentVideoId = videoId;
     console.log('Video changed:', videoId);
 
-    if (unifiedPanel) {
-      unifiedPanel.remove();
-      unifiedPanel = null;
-    }
+    // Remove old panel
+    const existingFab = document.getElementById('talkbridge-fab');
+    const existingPanel = document.getElementById('talkbridge-unified-panel');
+    if (existingFab) existingFab.remove();
+    if (existingPanel) existingPanel.remove();
+    unifiedPanel = null;
 
     // Reset state
     translations.clear();
@@ -848,9 +1216,18 @@ setInterval(() => {
 
     if ((settings.enableQA && settings.geminiApiKey) ||
         (settings.enableTranslation && settings.targetLanguage)) {
-      loadVideoFeatures();
+      loadingInProgress = true;
+      loadVideoFeatures().finally(() => {
+        loadingInProgress = false;
+      });
     }
   }
-}, 1000);
+}
+
+// Check every second for video changes
+setInterval(handleVideoChange, 1000);
+
+// Also listen for YouTube's navigation events (faster detection)
+document.addEventListener('yt-navigate-finish', handleVideoChange);
 
 init();
