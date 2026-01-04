@@ -6,12 +6,12 @@
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabCapture"
   ],
   "host_permissions": [
-    "https://www.youtube.com/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://talkbridge-backend-1053199504066.us-central1.run.app/*"
+    "https://*/*",
+    "http://*/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",
@@ -23,8 +23,8 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*"],
-      "js": ["content/content-autoplay.js"],
+      "matches": ["<all_urls>"],
+      "js": ["content/audio-capture.js", "content/content-autoplay.js"],
       "css": ["content/content-startup.css"],
       "run_at": "document_end"
     }

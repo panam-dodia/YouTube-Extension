@@ -9,7 +9,8 @@ let settings = {
   geminiApiKey: '',
   targetLanguage: '',
   enableTranslation: false,
-  enableQA: false
+  enableQA: false,
+  sourceLanguage: 'en' // Default source language
 };
 let currentVideoId = null;
 let transcript = null;
@@ -27,6 +28,10 @@ let youtubeVideo = null;
 let playbackQueue = [];
 let groupedSentences = [];
 let isSyncingPlayback = false; // Flag to prevent infinite loops when syncing video/audio
+let audioCaptureManager = null; // For live audio capture
+let transcriptionMode = 'none'; // 'transcript', 'live', or 'none'
+let liveTranscriptBuffer = []; // Buffer for live transcriptions
+let detectedSourceLanguage = null; // Auto-detected source language
 
 // Initialize extension
 async function init() {
@@ -34,28 +39,41 @@ async function init() {
     geminiApiKey: '',
     targetLanguage: '',
     enableTranslation: false,
-    enableQA: false
+    enableQA: false,
+    sourceLanguage: 'en'
   });
   settings = stored;
 
-  // Wait for YouTube to be ready and check for video
-  const checkVideo = () => {
-    currentVideoId = getVideoId();
-    if (currentVideoId && !loadingInProgress) {
-      console.log('Current video:', currentVideoId);
+  // Detect if we're on a video page
+  const detectAndLoadVideo = () => {
+    const video = document.querySelector('video');
+
+    if (video && !loadingInProgress) {
+      // Check if this is YouTube
+      const isYouTube = window.location.hostname.includes('youtube.com');
+
+      if (isYouTube) {
+        currentVideoId = getVideoId();
+        console.log('YouTube video detected:', currentVideoId);
+      } else {
+        // Non-YouTube video
+        currentVideoId = `video_${Date.now()}`;
+        console.log('Non-YouTube video detected');
+      }
+
       if (settings.enableQA || (settings.enableTranslation && settings.targetLanguage)) {
         loadingInProgress = true;
         loadVideoFeatures().finally(() => {
           loadingInProgress = false;
         });
       }
-    } else if (!currentVideoId) {
-      // Retry if no video ID yet (page still loading)
-      setTimeout(checkVideo, 500);
+    } else if (!video) {
+      // Retry if no video yet (page still loading)
+      setTimeout(detectAndLoadVideo, 500);
     }
   };
 
-  checkVideo();
+  detectAndLoadVideo();
 }
 
 function getVideoId() {
@@ -67,44 +85,124 @@ async function loadVideoFeatures() {
   try {
     console.log('🎯 Loading video features...');
 
-    transcript = await fetchYouTubeTranscript(currentVideoId);
-    console.log(`✅ Fetched ${transcript.length} transcript segments`);
-
-    transcriptText = transcript.map(t => t.text).join(' ');
-
-    // Detect gender for better voice matching
-    if (settings.enableTranslation && transcript.length > 0) {
-      await detectSpeakerGender();
-    }
-
-    await chrome.storage.local.set({
-      [`transcript_${currentVideoId}`]: {
-        videoId: currentVideoId,
-        transcript: transcript,
-        timestamp: Date.now()
-      }
-    });
-
-    // Get YouTube player reference
+    // Get video player reference
     getYouTubePlayer();
 
-    // Mute YouTube video immediately when translation is enabled
+    if (!youtubeVideo) {
+      throw new Error('No video element found');
+    }
+
+    const isYouTube = window.location.hostname.includes('youtube.com');
+
+    // Try to fetch YouTube transcript first (if on YouTube)
+    let hasTranscript = false;
+    if (isYouTube && currentVideoId && currentVideoId.startsWith('video_') === false) {
+      try {
+        transcript = await fetchYouTubeTranscript(currentVideoId);
+        console.log(`✅ Fetched ${transcript.length} transcript segments`);
+        transcriptText = transcript.map(t => t.text).join(' ');
+        hasTranscript = true;
+        transcriptionMode = 'transcript';
+
+        // Detect gender for better voice matching
+        if (settings.enableTranslation && transcript.length > 0) {
+          await detectSpeakerGender();
+        }
+
+        // Store transcript
+        await chrome.storage.local.set({
+          [`transcript_${currentVideoId}`]: {
+            videoId: currentVideoId,
+            transcript: transcript,
+            timestamp: Date.now()
+          }
+        });
+      } catch (error) {
+        console.log('⚠️ No transcript available, falling back to live audio capture');
+        hasTranscript = false;
+      }
+    }
+
+    // If no transcript, use live audio capture
+    if (!hasTranscript) {
+      transcriptionMode = 'live';
+      console.log('🎤 Initializing live audio capture mode');
+
+      // Initialize audio capture manager
+      audioCaptureManager = new AudioCaptureManager(
+        youtubeVideo,
+        handleLiveTranscript,
+        handleAudioCaptureError
+      );
+
+      // Start audio capture automatically when video plays
+      console.log('⏳ Waiting for video to play...');
+
+      const startAudioCapture = async () => {
+        console.log('🎬 Video playing - starting audio capture');
+
+        // Check if source and target languages are the same
+        const sourceLanguage = settings.sourceLanguage || 'en';
+        if (sourceLanguage === settings.targetLanguage) {
+          console.log('⚠️ Source and target languages are the same - transcription only mode');
+        }
+
+        // Start capturing audio
+        const started = await audioCaptureManager.startCapture(sourceLanguage);
+        if (!started) {
+          console.error('❌ Failed to start audio capture');
+        } else {
+          console.log('✅ Audio capture started successfully');
+        }
+
+        // Remove the event listener after starting
+        youtubeVideo.removeEventListener('playing', startAudioCapture);
+      };
+
+      // Listen for playing event (fires when video actually starts playing)
+      youtubeVideo.addEventListener('playing', startAudioCapture);
+
+      // If video is already playing, start immediately
+      if (!youtubeVideo.paused && youtubeVideo.readyState >= 3) {
+        startAudioCapture();
+      }
+    }
+
+    // DON'T mute video in live audio mode - we need the audio to flow through Web Audio API
     if (youtubeVideo && settings.enableTranslation && settings.targetLanguage) {
-      console.log('🔇 Muting YouTube video for translation');
-      youtubeVideo.muted = true;
+      if (transcriptionMode === 'transcript') {
+        // Only mute in transcript mode
+        console.log('🔇 Muting video for translation (transcript mode)');
+        youtubeVideo.muted = true;
+      } else {
+        // In live mode, keep video unmuted but set volume to 0 so user doesn't hear original audio
+        console.log('🔊 Keeping video unmuted for audio capture (volume will be 0)');
+        youtubeVideo.muted = false;
+        youtubeVideo.volume = 0;
+      }
+
+      // Make sure video is playing (needed for audio capture)
+      if (youtubeVideo.paused) {
+        console.log('▶️ Starting video playback for audio capture');
+        youtubeVideo.play().catch(err => console.log('Auto-play prevented:', err));
+      }
     }
 
     // Create unified panel
     createUnifiedPanel();
 
-    // Start progressive translation if enabled
+    // Start translation based on mode
     if (settings.enableTranslation && settings.targetLanguage) {
-      startProgressiveTranslation();
+      if (transcriptionMode === 'transcript') {
+        startProgressiveTranslation();
+      } else if (transcriptionMode === 'live') {
+        console.log('📡 Live translation mode active - processing audio in real-time');
+      }
     }
 
   } catch (error) {
     console.error('❌ Error loading features:', error);
-    showNotification('Failed to fetch transcript. Video may not have captions.', 'error');
+    showNotification('Failed to initialize video translation.', 'error');
   }
 }
 
@@ -189,6 +287,110 @@ async function detectSpeakerGender() {
   } catch (error) {
     console.error('Gender detection error:', error);
     detectedGender = 'male';
+  }
+}
+
+// Handler for live transcript chunks from audio capture
+async function handleLiveTranscript(transcriptChunk) {
+  try {
+    const { text, confidence, timestamp, language } = transcriptChunk;
+
+    console.log(`📝 Live transcript: "${text}" (confidence: ${(confidence * 100).toFixed(1)}%)`);
+
+    // Update detected source language
+    if (!detectedSourceLanguage && language) {
+      detectedSourceLanguage = language;
+      console.log(`🌍 Detected source language: ${language}`);
+    }
+
+    // Check if source and target are the same
+    const shouldSkipTranslation = detectedSourceLanguage === settings.targetLanguage ||
+                                   settings.sourceLanguage === settings.targetLanguage;
+
+    if (shouldSkipTranslation) {
+      // Just display the transcription without translation
+      displayLiveTranscript(text, text, timestamp, true);
+      return;
+    }
+
+    // Translate the text
+    const response = await fetch(`${API_URL}/api/translation/translate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: text,
+        targetLanguage: settings.targetLanguage
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Translation failed:', response.statusText);
+      return;
+    }
+
+    const data = await response.json();
+    const translatedText = data.translatedText;
+
+    // Generate audio for the translation
+    const audioResponse = await fetch(`${API_URL}/api/translation/text-to-speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: translatedText,
+        gender: detectedGender,
+        language: settings.targetLanguage
+      })
+    });
+
+    if (audioResponse.ok) {
+      const audioBlob = await audioResponse.blob();
+
+      // Play the audio immediately
+      const audio = new Audio(URL.createObjectURL(audioBlob));
+      audio.play();
+
+      // Display the translation
+      displayLiveTranscript(text, translatedText, timestamp, false);
+    }
+
+  } catch (error) {
+    console.error('Error handling live transcript:', error);
+  }
+}
+
+// Handler for audio capture errors
+function handleAudioCaptureError(error) {
+  console.error('Audio capture error:', error);
+  showNotification('Audio capture failed. Please check permissions.', 'error');
+}
+
+// Display live transcript in the UI
+function displayLiveTranscript(originalText, translatedText, timestamp, isTranscriptionOnly) {
+  const translationList = document.getElementById('translation-list');
+  if (!translationList) return;
+
+  const item = document.createElement('div');
+  item.className = 'translation-item';
+
+  const label = isTranscriptionOnly ? 'Transcription' : 'Translation';
+  const time = new Date(timestamp).toLocaleTimeString();
+
+  item.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 4px;">
+      <span style="font-size: 11px; color: #aaa;">${label} • ${time}</span>
+    </div>
+    <div style="font-size: 13px; color: #ddd; margin-bottom: 4px;">${originalText}</div>
+    ${!isTranscriptionOnly ? `<div style="font-size: 14px; color: #fff; font-weight: 500;">${translatedText}</div>` : ''}
+  `;
+
+  translationList.appendChild(item);
+
+  // Auto-scroll to bottom
+  translationList.scrollTop = translationList.scrollHeight;
+
+  // Keep only last 50 items to prevent memory issues
+  while (translationList.children.length > 50) {
+    translationList.removeChild(translationList.firstChild);
   }
 }
 
@@ -1198,6 +1400,12 @@ function handleVideoChange() {
     currentVideoId = videoId;
     console.log('Video changed:', videoId);
 
+    // Stop audio capture if active
+    if (audioCaptureManager) {
+      audioCaptureManager.stopCapture();
+      audioCaptureManager = null;
+    }
+
     // Remove old panel
     const existingFab = document.getElementById('talkbridge-fab');
     const existingPanel = document.getElementById('talkbridge-unified-panel');
@@ -1213,6 +1421,9 @@ function handleVideoChange() {
     hasAutoStarted = false;
     currentSegmentIndex = 0;
     playbackQueue = [];
+    transcriptionMode = 'none';
+    liveTranscriptBuffer = [];
+    detectedSourceLanguage = null;
 
     if ((settings.enableQA && settings.geminiApiKey) ||
         (settings.enableTranslation && settings.targetLanguage)) {

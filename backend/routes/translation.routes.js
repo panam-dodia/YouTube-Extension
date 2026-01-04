@@ -1,6 +1,7 @@
 import express from 'express';
 import geminiService from '../services/gemini.service.js';
 import ttsService from '../services/tts.service.js';
+import sttService from '../services/stt.service.js';
 
 const router = express.Router();
 
@@ -118,6 +119,68 @@ router.post('/detect-gender', async (req, res) => {
     console.error('Error detecting gender:', error);
     res.status(500).json({
       error: 'Failed to detect gender',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/translation/speech-to-text
+ * Transcribe audio to text
+ */
+router.post('/speech-to-text', async (req, res) => {
+  try {
+    const { audioData, sourceLanguage = 'en' } = req.body;
+
+    if (!audioData) {
+      return res.status(400).json({ error: 'Audio data is required' });
+    }
+
+    // Convert base64 to buffer
+    const audioBuffer = Buffer.from(audioData, 'base64');
+
+    const result = await sttService.transcribeAudio(audioBuffer, sourceLanguage);
+
+    res.json({
+      success: true,
+      transcript: result.transcript,
+      confidence: result.confidence,
+      language: result.language
+    });
+  } catch (error) {
+    console.error('Error transcribing audio:', error);
+    res.status(500).json({
+      error: 'Failed to transcribe audio',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/translation/detect-language
+ * Detect language from audio
+ */
+router.post('/detect-language', async (req, res) => {
+  try {
+    const { audioData } = req.body;
+
+    if (!audioData) {
+      return res.status(400).json({ error: 'Audio data is required' });
+    }
+
+    // Convert base64 to buffer
+    const audioBuffer = Buffer.from(audioData, 'base64');
+
+    const detectedLanguage = await sttService.detectLanguage(audioBuffer);
+
+    res.json({
+      success: true,
+      language: detectedLanguage
+    });
+  } catch (error) {
+    console.error('Error detecting language:', error);
+    res.status(500).json({
+      error: 'Failed to detect language',
       message: error.message
     });
   }
