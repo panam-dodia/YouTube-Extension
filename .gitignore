@@ -47,3 +47,4 @@ backend/.elasticbeanstalk/
 # Chrome Extension specific
 *.crx
 *.pem
+google-cloud-key.json

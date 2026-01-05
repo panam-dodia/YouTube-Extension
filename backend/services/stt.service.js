@@ -32,6 +32,8 @@ export const SUPPORTED_LANGUAGES = {
  */
 export async function transcribeAudio(audioBuffer, languageCode = 'en') {
   try {
+    console.log(`[STT] Transcribing audio: ${audioBuffer.length} bytes, language: ${languageCode}`);
+
     const gcpLanguageCode = SUPPORTED_LANGUAGES[languageCode] || 'en-US';
 
     const audio = {
@@ -41,11 +43,16 @@ export async function transcribeAudio(audioBuffer, languageCode = 'en') {
     const config = {
       encoding: 'WEBM_OPUS',
       sampleRateHertz: 48000,
-      audioChannelCount: 2, // Stereo audio from Web Audio API
+      audioChannelCount: 2, // Stereo audio (desktop capture sends 2 channels)
       languageCode: gcpLanguageCode,
       enableAutomaticPunctuation: true,
-      model: 'latest_long',
+      model: 'latest_short', // Use short model for live transcription
       useEnhanced: true,
+      // Add speech context for better accuracy
+      speechContexts: [{
+        phrases: [],
+        boost: 20
+      }]
     };
 
     const request = {
@@ -54,15 +61,27 @@ export async function transcribeAudio(audioBuffer, languageCode = 'en') {
     };
 
     const [response] = await client.recognize(request);
+
+    console.log('[STT] Response received:', {
+      hasResults: !!response.results,
+      resultCount: response.results?.length || 0
+    });
+
+    if (!response.results || response.results.length === 0) {
+      console.log('[STT] No speech detected in audio');
+      return { transcript: '', confidence: 0, language: languageCode };
+    }
+
     const transcription = response.results
       .map(result => result.alternatives[0])
-      .filter(alt => alt.transcript)
+      .filter(alt => alt && alt.transcript)
       .map(alt => ({
         transcript: alt.transcript,
         confidence: alt.confidence || 0
       }));
 
     if (transcription.length === 0) {
+      console.log('[STT] No valid transcription alternatives found');
       return { transcript: '', confidence: 0, language: languageCode };
     }
 
@@ -70,13 +89,25 @@ export async function transcribeAudio(audioBuffer, languageCode = 'en') {
     const fullTranscript = transcription.map(t => t.transcript).join(' ');
     const avgConfidence = transcription.reduce((sum, t) => sum + t.confidence, 0) / transcription.length;
 
+    console.log('[STT] Transcription successful:', {
+      transcript: fullTranscript,
+      confidence: avgConfidence,
+      length: fullTranscript.length
+    });
+
     return {
       transcript: fullTranscript,
       confidence: avgConfidence,
       language: languageCode
     };
   } catch (error) {
-    console.error('Speech-to-Text error:', error);
+    console.error('[STT] Speech-to-Text error:', error);
+    console.error('[STT] Error details:', {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      details: error.details
+    });
     throw new Error(`Failed to transcribe audio: ${error.message}`);
   }
 }

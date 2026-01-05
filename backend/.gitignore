@@ -26,3 +26,5 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+google-cloud-key.json
+

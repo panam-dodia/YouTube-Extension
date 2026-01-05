@@ -32,6 +32,7 @@ let audioCaptureManager = null; // For live audio capture
 let transcriptionMode = 'none'; // 'transcript', 'live', or 'none'
 let liveTranscriptBuffer = []; // Buffer for live transcriptions
 let detectedSourceLanguage = null; // Auto-detected source language
+let isTabCaptureActive = false; // Track if tab capture is already running
 
 // Initialize extension
 async function init() {
@@ -123,73 +124,44 @@ async function loadVideoFeatures() {
       }
     }
 
-    // If no transcript, use live audio capture
+    // If no transcript, use live tab audio capture
     if (!hasTranscript) {
       transcriptionMode = 'live';
-      console.log('🎤 Initializing live audio capture mode');
+      console.log('🎤 Initializing live tab audio capture mode');
 
-      // Initialize audio capture manager
-      audioCaptureManager = new AudioCaptureManager(
-        youtubeVideo,
+      // Initialize tab audio capture manager (works with DRM-protected content)
+      audioCaptureManager = new TabAudioCaptureManager(
         handleLiveTranscript,
         handleAudioCaptureError
       );
 
-      // Start audio capture automatically when video plays
-      console.log('⏳ Waiting for video to play...');
-
-      const startAudioCapture = async () => {
-        console.log('🎬 Video playing - starting audio capture');
-
-        // Check if source and target languages are the same
-        const sourceLanguage = settings.sourceLanguage || 'en';
-        if (sourceLanguage === settings.targetLanguage) {
-          console.log('⚠️ Source and target languages are the same - transcription only mode');
-        }
-
-        // Start capturing audio
-        const started = await audioCaptureManager.startCapture(sourceLanguage);
-        if (!started) {
-          console.error('❌ Failed to start audio capture');
-        } else {
-          console.log('✅ Audio capture started successfully');
-        }
-
-        // Remove the event listener after starting
-        youtubeVideo.removeEventListener('playing', startAudioCapture);
-      };
-
-      // Listen for playing event (fires when video actually starts playing)
-      youtubeVideo.addEventListener('playing', startAudioCapture);
-
-      // If video is already playing, start immediately
-      if (!youtubeVideo.paused && youtubeVideo.readyState >= 3) {
-        startAudioCapture();
-      }
+      // Audio capture will be started manually via "Start Translation" button
+      console.log('⏳ Click "Start Translation" button to begin audio capture');
     }
 
-    // DON'T mute video in live audio mode - we need the audio to flow through Web Audio API
+    // Mute video for translation modes
     if (youtubeVideo && settings.enableTranslation && settings.targetLanguage) {
       if (transcriptionMode === 'transcript') {
-        // Only mute in transcript mode
         console.log('🔇 Muting video for translation (transcript mode)');
         youtubeVideo.muted = true;
-      } else {
-        // In live mode, keep video unmuted but set volume to 0 so user doesn't hear original audio
-        console.log('🔊 Keeping video unmuted for audio capture (volume will be 0)');
+      } else if (transcriptionMode === 'live') {
+        // In live tab capture mode, DO NOT mute video - tab capture needs audio to be playing
+        console.log('🔊 Keeping video unmuted for tab audio capture');
         youtubeVideo.muted = false;
-        youtubeVideo.volume = 0;
-      }
-
-      // Make sure video is playing (needed for audio capture)
-      if (youtubeVideo.paused) {
-        console.log('▶️ Starting video playback for audio capture');
-        youtubeVideo.play().catch(err => console.log('Auto-play prevented:', err));
       }
     }
 
     // Create unified panel
     createUnifiedPanel();
+
+    // Auto-start capture if in live mode
+    if (transcriptionMode === 'live' && settings.enableTranslation && settings.targetLanguage) {
+      console.log('🎬 Auto-starting desktop capture (system audio)...');
+
+      // Use desktop capture for universal compatibility
+      // Works with YouTube (no transcripts), Netflix, and all other platforms
+      startDesktopCapture();
+    }
 
     // Start translation based on mode
     if (settings.enableTranslation && settings.targetLanguage) {
@@ -398,7 +370,35 @@ let lastKnownTime = 0;
 let isSeeking = false;
 
 function getYouTubePlayer() {
-  youtubeVideo = document.querySelector('video');
+  // Find ALL video elements
+  const videos = Array.from(document.querySelectorAll('video'));
+
+  if (videos.length === 0) {
+    youtubeVideo = null;
+    return;
+  }
+
+  // If multiple videos, find the main playing one
+  if (videos.length > 1) {
+    console.log(`🔍 Found ${videos.length} video elements, selecting the main one...`);
+
+    // Score each video to find the primary player
+    youtubeVideo = videos.reduce((best, video, index) => {
+      const score =
+        (!video.paused ? 100 : 0) +
+        (video.readyState * 10) +
+        (video.videoWidth > 0 && video.videoHeight > 0 ? 50 : 0) +
+        (video.getBoundingClientRect().width > 100 ? 30 : 0) +
+        (video.currentTime > 0 ? 20 : 0);
+
+      console.log(`  Video ${index}: paused=${video.paused}, ready=${video.readyState}, size=${video.videoWidth}x${video.videoHeight}, score=${score}`);
+
+      return (!best || score > best.score) ? {video, score} : best;
+    }, null).video;
+  } else {
+    youtubeVideo = videos[0];
+  }
+
   if (youtubeVideo) {
     console.log('✅ Found YouTube video element');
 
@@ -417,11 +417,13 @@ function getYouTubePlayer() {
       }
     });
 
-    // Keep video muted when translation is active
+    // Keep video muted when translation is active (transcript mode only)
     youtubeVideo.addEventListener('volumechange', () => {
-      // Keep muted as long as translation feature is enabled
-      if (settings.enableTranslation && settings.targetLanguage && !youtubeVideo.muted) {
-        console.log('🔇 Keeping YouTube video muted during translation');
+      // Keep muted ONLY in transcript mode - live tab capture needs audio
+      if (settings.enableTranslation && settings.targetLanguage &&
+          transcriptionMode === 'transcript' &&
+          !youtubeVideo.muted) {
+        console.log('🔇 Keeping YouTube video muted during translation (transcript mode)');
         youtubeVideo.muted = true;
       }
     });
@@ -591,7 +593,7 @@ function createUnifiedPanel() {
         <div class="tab-content active" id="translation-tab">
           <div class="translation-list" id="translation-list"></div>
           <div class="translation-controls">
-            <p id="translation-status-text">Preparing smooth translation... For best experience, let it auto-play!</p>
+            <p id="translation-status-text">Translating...</p>
             <div class="progress-container" id="progress-container" style="display: none;">
               <div class="progress-bar">
                 <div class="progress-fill" id="progress-fill"></div>
@@ -599,6 +601,12 @@ function createUnifiedPanel() {
               <div class="progress-text" id="progress-text">0%</div>
             </div>
             <div class="playback-controls">
+              <button id="translation-toggle-btn" class="control-btn">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+                <span>Start Translation</span>
+              </button>
               <button id="play-btn" class="control-btn" style="display: none;">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z"/>
@@ -671,6 +679,76 @@ function createUnifiedPanel() {
     unifiedPanel.classList.add('hidden');
     fab.classList.remove('active');
   });
+
+  // Translation toggle control
+  let isTranslationActive = false;
+  let isTogglingTranslation = false; // Prevent double-click
+  const translationToggleBtn = document.getElementById('translation-toggle-btn');
+
+  if (translationToggleBtn) {
+    translationToggleBtn.addEventListener('click', async () => {
+      // Prevent double-clicking
+      if (isTogglingTranslation) {
+        console.log('⚠️ Already toggling translation, ignoring click');
+        return;
+      }
+
+      isTogglingTranslation = true;
+      isTranslationActive = !isTranslationActive;
+      console.log('🔄 Translation toggle state:', isTranslationActive);
+
+      const btnText = translationToggleBtn.querySelector('span');
+      const btnIcon = translationToggleBtn.querySelector('svg path');
+
+      if (isTranslationActive) {
+        // Start translation
+        btnText.textContent = 'Stop Translation';
+        btnIcon.setAttribute('d', 'M6 4h4v16H6V4zm8 0h4v16h-4V4z'); // Stop icon
+        console.log('▶️ Starting translation...');
+
+        // For live audio mode, start desktop capture
+        if (transcriptionMode === 'live') {
+          startDesktopCapture();
+          isTogglingTranslation = false;
+          return;
+        }
+
+        // Reset toggle flag
+        isTogglingTranslation = false;
+      } else {
+        // Stop translation
+        btnText.textContent = 'Start Translation';
+        btnIcon.setAttribute('d', 'M8 5v14l11-7z'); // Play icon
+        console.log('⏸️ Stopping translation...');
+
+        // For live audio mode, stop tab audio capture
+        if (transcriptionMode === 'live') {
+          if (audioCaptureManager) {
+            audioCaptureManager.stopCapture();
+          }
+
+          // Stop offscreen document capture
+          chrome.runtime.sendMessage({
+            action: 'stopTabCapture',
+            tabId: chrome.runtime.id
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('❌ Failed to stop tab capture:', chrome.runtime.lastError.message);
+              // Still mark as inactive locally
+              isTabCaptureActive = false;
+              showNotification('⚠️ Failed to stop tab capture', 'error');
+            } else if (response && response.success) {
+              console.log('✅ Tab capture stopped successfully');
+              // State will be updated when tabCaptureStopped message is received
+            }
+          });
+        }
+
+        // Reset toggle flag
+        isTogglingTranslation = false;
+      }
+    });
+  }
 
   // Playback controls
   document.getElementById('play-btn')?.addEventListener('click', resumePlayback);
@@ -1374,6 +1452,40 @@ function showNotification(message, type = 'info') {
   }, 3000);
 }
 
+// Start desktop capture (universal system audio capture)
+function startDesktopCapture() {
+  if (isTabCaptureActive) {
+    console.log('✅ Capture is already active');
+    showNotification('🎤 Audio capture is already running!', 'info');
+    return;
+  }
+
+  console.log('🖥️ Requesting desktop capture...');
+
+  // Get source language from settings
+  chrome.storage.sync.get({ sourceLanguage: 'en' }, (result) => {
+    // Send message to background script to start desktop capture
+    chrome.runtime.sendMessage({
+      action: 'startDesktopCapture',
+      sourceLanguage: result.sourceLanguage
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('❌ Failed to start desktop capture:', chrome.runtime.lastError.message);
+        showNotification('❌ Failed to start audio capture: ' + chrome.runtime.lastError.message, 'error');
+        return;
+      }
+
+      if (response && response.success) {
+        console.log('✅ Desktop capture started successfully');
+        showNotification('🎤 System audio capture started! Select your browser window/screen.', 'success');
+      } else {
+        console.error('❌ Failed to start desktop capture:', response?.error);
+        showNotification('❌ ' + (response?.error || 'Failed to start audio capture'), 'error');
+      }
+    });
+  });
+}
+
 // Message listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'UPDATE_SETTINGS') {
@@ -1386,6 +1498,65 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         loadVideoFeatures();
       }
     }
+  }
+
+  // Handle tab capture started from offscreen document
+  if (message.action === 'tabCaptureStarted') {
+    console.log('✅ Tab audio capture started in offscreen document');
+    transcriptionMode = 'live';
+    isTabCaptureActive = true; // Mark capture as active
+
+    // Get video player reference
+    getYouTubePlayer();
+
+    // Keep video unmuted for tab audio capture
+    if (youtubeVideo) {
+      console.log('🔊 Keeping video unmuted for tab audio capture');
+      youtubeVideo.muted = false;
+    }
+
+    // Show the unified panel if not already shown
+    if (!unifiedPanel && settings.enableTranslation && settings.targetLanguage) {
+      createUnifiedPanel();
+    }
+
+    // Update the translation toggle button state if it exists
+    const translationToggleBtn = document.getElementById('translation-toggle-btn');
+    if (translationToggleBtn) {
+      const btnText = translationToggleBtn.querySelector('span');
+      const btnIcon = translationToggleBtn.querySelector('svg path');
+      btnText.textContent = 'Stop Translation';
+      btnIcon.setAttribute('d', 'M6 4h4v16H6V4zm8 0h4v16h-4V4z'); // Stop icon
+      window.isTranslationActive = true;
+    }
+
+    // Show success notification
+    showNotification('✅ Live translation started! Audio is being captured and translated.', 'success');
+  }
+
+  // Handle tab capture stopped from background
+  if (message.action === 'tabCaptureStopped') {
+    console.log('✅ Tab audio capture stopped in offscreen document');
+    isTabCaptureActive = false; // Mark capture as inactive
+
+    // Update the translation toggle button state if it exists
+    const translationToggleBtn = document.getElementById('translation-toggle-btn');
+    if (translationToggleBtn) {
+      const btnText = translationToggleBtn.querySelector('span');
+      const btnIcon = translationToggleBtn.querySelector('svg path');
+      btnText.textContent = 'Start Translation';
+      btnIcon.setAttribute('d', 'M8 5v14l11-7z'); // Play icon
+      window.isTranslationActive = false;
+    }
+
+    // Show notification
+    showNotification('⏸️ Translation stopped', 'info');
+  }
+
+  // Handle transcript received from offscreen document
+  if (message.action === 'transcriptReceived') {
+    console.log('📥 Received transcript from offscreen:', message.transcript);
+    handleLiveTranscript(message.transcript);
   }
 });
 

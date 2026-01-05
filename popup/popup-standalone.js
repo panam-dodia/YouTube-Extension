@@ -17,6 +17,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const targetLanguage = document.getElementById('target-language');
   const enableQA = document.getElementById('enable-qa');
   const saveButton = document.getElementById('save-settings');
+  const startTranslationButton = document.getElementById('start-translation');
   const joinWaitlistBtn = document.getElementById('join-waitlist');
   const waitlistEmailInput = document.getElementById('waitlist-email');
 
@@ -74,6 +75,140 @@ document.addEventListener('DOMContentLoaded', async () => {
   enableTranslation.checked = settings.enableTranslation;
   targetLanguage.value = settings.targetLanguage;
   enableQA.checked = settings.enableQA;
+
+  // Auto-start tab capture if translation is enabled
+  if (settings.enableTranslation && settings.targetLanguage && (isTrialActive || isRegistered)) {
+    console.log('🎬 Auto-starting tab capture...');
+    await autoStartCapture();
+  }
+
+  // Function to automatically start tab capture
+  async function autoStartCapture() {
+    try {
+      // Get the current tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      if (!tab || !tab.id) {
+        console.error('❌ No active tab found');
+        return;
+      }
+
+      // Request tab capture stream ID (user gesture is preserved here in popup context)
+      chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id }, async (streamId) => {
+        if (chrome.runtime.lastError) {
+          console.error('❌ Failed to get stream ID:', chrome.runtime.lastError.message);
+          return;
+        }
+
+        console.log('✅ Got stream ID:', streamId);
+
+        // Get source language from settings
+        chrome.storage.sync.get({ sourceLanguage: 'en' }, (result) => {
+          // Send streamId to background script to relay to offscreen document
+          chrome.runtime.sendMessage({
+            action: 'startTabCapture',
+            streamId: streamId,
+            tabId: tab.id,
+            sourceLanguage: result.sourceLanguage
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('❌ Failed to send message:', chrome.runtime.lastError.message);
+              return;
+            }
+
+            if (response && response.success) {
+              console.log('✅ Translation started successfully (auto-start)');
+
+              // Auto-close popup after 1 second
+              setTimeout(() => {
+                window.close();
+              }, 1000);
+            } else {
+              console.error('❌ Failed to start translation:', response?.error);
+            }
+          });
+        });
+      });
+    } catch (error) {
+      console.error('❌ Error auto-starting translation:', error);
+    }
+  }
+
+  // Start Translation - handles tab audio capture with user gesture
+  startTranslationButton.addEventListener('click', async () => {
+    try {
+      console.log('🎬 Start Translation button clicked');
+
+      // Check if trial is active
+      if (!isTrialActive && !isRegistered) {
+        alert('Your trial has expired. Please join the waitlist!');
+        return;
+      }
+
+      // Get the current tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      if (!tab || !tab.id) {
+        throw new Error('No active tab found');
+      }
+
+      // Visual feedback - starting
+      startTranslationButton.textContent = 'Starting...';
+      startTranslationButton.disabled = true;
+
+      // Request tab capture stream ID (user gesture is preserved here in popup context)
+      chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id }, async (streamId) => {
+        if (chrome.runtime.lastError) {
+          console.error('❌ Failed to get stream ID:', chrome.runtime.lastError.message);
+          startTranslationButton.textContent = 'Start Translation';
+          startTranslationButton.disabled = false;
+          alert('Failed to start translation: ' + chrome.runtime.lastError.message);
+          return;
+        }
+
+        console.log('✅ Got stream ID:', streamId);
+
+        // Get source language from settings
+        chrome.storage.sync.get({ sourceLanguage: 'en' }, (result) => {
+          // Send streamId to background script to relay to offscreen document
+          chrome.runtime.sendMessage({
+            action: 'startTabCapture',
+            streamId: streamId,
+            tabId: tab.id,
+            sourceLanguage: result.sourceLanguage
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('❌ Failed to send message:', chrome.runtime.lastError.message);
+              startTranslationButton.textContent = 'Start Translation';
+              startTranslationButton.disabled = false;
+              return;
+            }
+
+            if (response && response.success) {
+              console.log('✅ Translation started successfully');
+              startTranslationButton.textContent = 'Translation Active ✓';
+              startTranslationButton.style.background = '#4caf50';
+
+              // Auto-close popup after 1 second
+              setTimeout(() => {
+                window.close();
+              }, 1000);
+            } else {
+              console.error('❌ Failed to start translation:', response?.error);
+              startTranslationButton.textContent = 'Start Translation';
+              startTranslationButton.disabled = false;
+              alert('Failed to start translation: ' + (response?.error || 'Unknown error'));
+            }
+          });
+        });
+      });
+    } catch (error) {
+      console.error('❌ Error starting translation:', error);
+      startTranslationButton.textContent = 'Start Translation';
+      startTranslationButton.disabled = false;
+      alert('Error: ' + error.message);
+    }
+  });
 
   // Save settings
   saveButton.addEventListener('click', async () => {

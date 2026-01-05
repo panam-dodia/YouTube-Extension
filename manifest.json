@@ -5,9 +5,11 @@
   "description": "Real-time YouTube video translation with AI voice dubbing and intelligent Q&A",
   "permissions": [
     "storage",
-    "activeTab",
+    "tabs",
     "scripting",
-    "tabCapture"
+    "tabCapture",
+    "desktopCapture",
+    "offscreen"
   ],
   "host_permissions": [
     "https://*/*",
@@ -24,7 +26,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/audio-capture.js", "content/content-autoplay.js"],
+      "js": ["content/audio-capture.js", "content/tab-audio-capture.js", "content/content-autoplay.js"],
       "css": ["content/content-startup.css"],
       "run_at": "document_end"
     }
@@ -36,5 +38,6 @@
     "16": "assets/icon16.png",
     "48": "assets/icon48.png",
     "128": "assets/icon128.png"
-  }
+  },
+  "minimum_chrome_version": "109"
 }
