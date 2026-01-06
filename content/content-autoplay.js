@@ -2,6 +2,7 @@
 console.log('🌉 TalkBridge extension loaded (Auto-play)');
 
 const API_URL = 'https://talkbridge-backend-1053199504066.us-central1.run.app';
+const BACKEND_URL = API_URL; // Backend URL for microphone transcription
 const BUFFER_SIZE = 3; // Number of segments to buffer before auto-play
 
 // State
@@ -33,6 +34,14 @@ let transcriptionMode = 'none'; // 'transcript', 'live', or 'none'
 let liveTranscriptBuffer = []; // Buffer for live transcriptions
 let detectedSourceLanguage = null; // Auto-detected source language
 let isTabCaptureActive = false; // Track if tab capture is already running
+
+// Web Audio API variables for createMediaElementSource approach
+let audioContext = null;
+let mediaElementSource = null;
+let gainNode = null;
+let analyser = null;
+let mediaStreamDestination = null;
+let loadingInProgress = false; // Prevent duplicate calls to loadVideoFeatures()
 
 // Initialize extension
 async function init() {
@@ -154,21 +163,12 @@ async function loadVideoFeatures() {
     // Create unified panel
     createUnifiedPanel();
 
-    // Auto-start capture if in live mode
-    if (transcriptionMode === 'live' && settings.enableTranslation && settings.targetLanguage) {
-      console.log('🎬 Auto-starting desktop capture (system audio)...');
-
-      // Use desktop capture for universal compatibility
-      // Works with YouTube (no transcripts), Netflix, and all other platforms
-      startDesktopCapture();
-    }
-
     // Start translation based on mode
     if (settings.enableTranslation && settings.targetLanguage) {
       if (transcriptionMode === 'transcript') {
         startProgressiveTranslation();
       } else if (transcriptionMode === 'live') {
-        console.log('📡 Live translation mode active - processing audio in real-time');
+        console.log('📡 Live translation mode ready - click "Start Translation" to begin');
       }
     }
 
@@ -702,13 +702,32 @@ function createUnifiedPanel() {
 
       if (isTranslationActive) {
         // Start translation
-        btnText.textContent = 'Stop Translation';
-        btnIcon.setAttribute('d', 'M6 4h4v16H6V4zm8 0h4v16h-4V4z'); // Stop icon
+        btnText.textContent = 'Pause Translation';
+        btnIcon.setAttribute('d', 'M6 4h4v16H6V4zm8 0h4v16h-4V4z'); // Pause icon
         console.log('▶️ Starting translation...');
 
-        // For live audio mode, start desktop capture
+        // For live audio mode, start microphone capture
         if (transcriptionMode === 'live') {
-          startDesktopCapture();
+          try {
+            await startMicrophoneCapture();
+
+            // Mute original video audio (user will hear translated audio)
+            if (gainNode) {
+              gainNode.gain.value = 0.0;
+              console.log('🔇 Original audio muted for translation');
+            } else {
+              console.warn('⚠️ gainNode not available, original audio not muted');
+            }
+
+            showNotification('🎤 Translation started! You\'ll hear translated audio.', 'success');
+          } catch (error) {
+            console.error('❌ Failed to start audio capture:', error);
+            showNotification('❌ Failed to start audio capture. Please try again.', 'error');
+            // Reset button state
+            isTranslationActive = false;
+            btnText.textContent = 'Start Translation';
+            btnIcon.setAttribute('d', 'M8 5v14l11-7z');
+          }
           isTogglingTranslation = false;
           return;
         }
@@ -716,13 +735,21 @@ function createUnifiedPanel() {
         // Reset toggle flag
         isTogglingTranslation = false;
       } else {
-        // Stop translation
+        // Pause translation
         btnText.textContent = 'Start Translation';
         btnIcon.setAttribute('d', 'M8 5v14l11-7z'); // Play icon
-        console.log('⏸️ Stopping translation...');
+        console.log('⏸️ Pausing translation...');
 
-        // For live audio mode, stop tab audio capture
+        // For live audio mode, stop microphone capture
         if (transcriptionMode === 'live') {
+          stopMicrophoneCapture();
+
+          // Unmute original video audio (user will hear original audio)
+          if (gainNode) {
+            gainNode.gain.value = 1.0;
+            console.log('🔊 Original audio restored');
+          }
+
           if (audioCaptureManager) {
             audioCaptureManager.stopCapture();
           }
@@ -742,6 +769,8 @@ function createUnifiedPanel() {
               // State will be updated when tabCaptureStopped message is received
             }
           });
+
+          showNotification('⏸️ Translation paused. Hearing original audio.', 'info');
         }
 
         // Reset toggle flag
@@ -1455,11 +1484,20 @@ function showNotification(message, type = 'info') {
 // Start desktop capture (universal system audio capture)
 function startDesktopCapture() {
   if (isTabCaptureActive) {
-    console.log('✅ Capture is already active');
-    showNotification('🎤 Audio capture is already running!', 'info');
+    console.log('⚠️ Stopping existing tab capture to switch to desktop capture');
+    // Stop existing tab capture first
+    chrome.runtime.sendMessage({ action: 'stopCapture' }, () => {
+      isTabCaptureActive = false;
+      // Now start desktop capture
+      requestDesktopCaptureInternal();
+    });
     return;
   }
 
+  requestDesktopCaptureInternal();
+}
+
+function requestDesktopCaptureInternal() {
   console.log('🖥️ Requesting desktop capture...');
 
   // Get source language from settings
@@ -1470,20 +1508,422 @@ function startDesktopCapture() {
       sourceLanguage: result.sourceLanguage
     }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error('❌ Failed to start desktop capture:', chrome.runtime.lastError.message);
+        console.error('❌ Failed to send desktop capture request:', chrome.runtime.lastError.message);
         showNotification('❌ Failed to start audio capture: ' + chrome.runtime.lastError.message, 'error');
         return;
       }
 
       if (response && response.success) {
-        console.log('✅ Desktop capture started successfully');
-        showNotification('🎤 System audio capture started! Select your browser window/screen.', 'success');
-      } else {
-        console.error('❌ Failed to start desktop capture:', response?.error);
-        showNotification('❌ ' + (response?.error || 'Failed to start audio capture'), 'error');
+        console.log('✅ Desktop capture request sent - waiting for user to select window...');
+        showNotification('🎤 Please select your browser window and check "Share audio"', 'info');
       }
     });
   });
+}
+
+// Start microphone capture (simple and reliable)
+let microphoneStream = null;
+let microphoneRecorder = null;
+
+async function startMicrophoneCapture() {
+  if (isTabCaptureActive) {
+    console.log('✅ Audio capture is already active');
+    showNotification('🎤 Audio capture is already running!', 'info');
+    return;
+  }
+
+  console.log('🎤 Starting Web Audio API capture...');
+
+  try {
+    // Find all video and audio elements on the page
+    const mediaElements = document.querySelectorAll('video, audio');
+
+    if (mediaElements.length === 0) {
+      console.error('❌ No video or audio element found on the page');
+      showNotification('❌ No media element found. Please make sure video is loaded.', 'error');
+      return;
+    }
+
+    // Use the first media element (usually the main video)
+    const mediaElement = mediaElements[0];
+    console.log(`✅ Found media element: <${mediaElement.tagName.toLowerCase()}>`);
+
+    // ========== WIDEVINE & DRM DIAGNOSTICS ==========
+    console.log('🔍 ========== DRM DIAGNOSTICS START ==========');
+
+    // Check 1: Browser DRM support
+    console.log('1️⃣ DRM API available:', navigator.requestMediaKeySystemAccess ? 'YES' : 'NO');
+
+    // Check 2: Widevine availability
+    try {
+      await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{}]);
+      console.log('2️⃣ Widevine status: ✅ AVAILABLE');
+    } catch (e) {
+      console.error('2️⃣ Widevine status: ❌ BLOCKED', e.message);
+      console.error('   This may prevent audio capture on DRM-protected sites like Netflix');
+    }
+
+    // Check 3: Enterprise policies (async check)
+    if (chrome && chrome.storage && chrome.storage.managed) {
+      try {
+        const policies = await new Promise((resolve) => {
+          chrome.storage.managed.get(null, (result) => resolve(result));
+        });
+        console.log('3️⃣ Enterprise policies:', Object.keys(policies).length > 0 ? policies : 'NONE');
+      } catch (e) {
+        console.log('3️⃣ Enterprise policies: Not accessible (normal for non-managed Chrome)');
+      }
+    }
+
+    // Check 4: Media element encryption
+    if (mediaElement.mediaKeys) {
+      console.log('4️⃣ Media element encryption: YES (DRM active)');
+      console.log('   Media keys:', mediaElement.mediaKeys);
+    } else {
+      console.log('4️⃣ Media element encryption: NO (no DRM)');
+    }
+
+    // Check 5: Check for EME (Encrypted Media Extensions)
+    console.log('5️⃣ EME (Encrypted Media Extensions) support:',
+      typeof MediaKeys !== 'undefined' ? 'YES' : 'NO');
+
+    // Check 6: User agent and Chrome version
+    const uaMatch = navigator.userAgent.match(/Chrome\/(\d+)/);
+    const chromeVersion = uaMatch ? uaMatch[1] : 'unknown';
+    console.log('6️⃣ Chrome version:', chromeVersion);
+
+    // Check 7: Protected content capability
+    const canPlayDRM = mediaElement.canPlayType('video/mp4; codecs="avc1.42E01E"');
+    console.log('7️⃣ Can play protected content:', canPlayDRM || 'unknown');
+
+    console.log('🔍 ========== DRM DIAGNOSTICS END ==========');
+    console.log('');
+    console.log('💡 RECOMMENDATION: If Widevine is BLOCKED:');
+    console.log('   1. Check chrome://policy/ for enterprise restrictions');
+    console.log('   2. Check chrome://flags/ and search for "EME" or "protected"');
+    console.log('   3. Check chrome://settings/content/protectedContent');
+    console.log('   4. Try chrome://components/ and update Widevine');
+    console.log('   5. If none work, we will auto-fallback to Tab Capture API');
+    console.log('');
+    // ========== END DIAGNOSTICS ==========
+
+    // Create audio context (reuse if exists and not closed)
+    if (!audioContext || audioContext.state === 'closed') {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      console.log('✅ AudioContext created (new)');
+    } else {
+      console.log('✅ AudioContext reused (existing)');
+    }
+
+    // Create analyser for waveform visualization (optional)
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+
+    // Create gain node for volume control
+    gainNode = audioContext.createGain();
+    gainNode.gain.value = 1.0; // Normal volume
+
+    // Create destination for recording
+    mediaStreamDestination = audioContext.createMediaStreamDestination();
+
+    // Create source from media element (or reuse if already exists)
+    // This captures audio directly from the video/audio element before it goes to speakers
+    if (!mediaElement._audioSource) {
+      // First time creating source for this element
+      mediaElementSource = audioContext.createMediaElementSource(mediaElement);
+      mediaElement._audioSource = mediaElementSource;
+      mediaElement._audioDest = mediaStreamDestination;
+      mediaElement._gainNode = gainNode;
+
+      console.log('✅ Media element source created (new)');
+
+      // Connect the audio graph:
+      // source → analyser (for visualization)
+      // source → destination (for recording/transcription)
+      // source → gainNode → speakers (for playback with volume control)
+      mediaElementSource.connect(analyser);
+      mediaElementSource.connect(mediaStreamDestination);
+      mediaElementSource.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+    } else {
+      // Reuse existing source
+      mediaElementSource = mediaElement._audioSource;
+      mediaStreamDestination = mediaElement._audioDest || mediaStreamDestination;
+      gainNode = mediaElement._gainNode || gainNode;
+
+      console.log('✅ Media element source reused (existing)');
+
+      // Try to reconnect (might already be connected)
+      try {
+        mediaElementSource.connect(analyser);
+        mediaElementSource.connect(mediaStreamDestination);
+        mediaElementSource.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+      } catch (e) {
+        console.log('ℹ️ Audio nodes already connected');
+      }
+    }
+
+    console.log('✅ Audio graph connected');
+
+    // CRITICAL: Resume audio context if suspended
+    if (audioContext.state === 'suspended') {
+      console.log('⚠️ AudioContext suspended, resuming...');
+      await audioContext.resume();
+      console.log('✅ AudioContext resumed, state:', audioContext.state);
+    } else {
+      console.log('✅ AudioContext state:', audioContext.state);
+    }
+
+    // DIAGNOSTIC: Check if audio is actually flowing
+    console.log('🔍 Video element state:', {
+      paused: mediaElement.paused,
+      muted: mediaElement.muted,
+      volume: mediaElement.volume,
+      readyState: mediaElement.readyState,
+      networkState: mediaElement.networkState,
+      currentTime: mediaElement.currentTime,
+      duration: mediaElement.duration
+    });
+
+    // SMART FALLBACK: Monitor audio levels and auto-switch to Tab Capture if DRM blocks audio
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    let silenceDetectionCount = 0;
+    const SILENCE_THRESHOLD = 0.5; // Audio level below this is considered silence
+    const MAX_SILENCE_CHECKS = 3; // If silent for 3 checks (6 seconds), fallback to Tab Capture
+    let hasFallenBackToTabCapture = false;
+
+    const checkAudioInterval = setInterval(async () => {
+      if (!isTabCaptureActive) {
+        clearInterval(checkAudioInterval);
+        return;
+      }
+
+      analyser.getByteFrequencyData(dataArray);
+      const average = dataArray.reduce((sum, value) => sum + value, 0) / bufferLength;
+      console.log('🎵 Audio level:', average.toFixed(2), '(0 = silence, 128 = loud)');
+
+      // Check if video is playing but audio is silent (DRM blocking Web Audio API)
+      if (!mediaElement.paused && average < SILENCE_THRESHOLD) {
+        silenceDetectionCount++;
+        console.warn(`⚠️ Silence detected (${silenceDetectionCount}/${MAX_SILENCE_CHECKS})`);
+
+        if (silenceDetectionCount >= MAX_SILENCE_CHECKS && !hasFallenBackToTabCapture) {
+          hasFallenBackToTabCapture = true;
+          clearInterval(checkAudioInterval);
+
+          console.error('❌ DRM is blocking Web Audio API access!');
+          console.log('🔄 Automatically falling back to Tab Capture API...');
+
+          // Stop current Web Audio capture
+          if (microphoneRecorder && microphoneRecorder.state !== 'inactive') {
+            microphoneRecorder.stop();
+          }
+          isTabCaptureActive = false;
+
+          // Show notification to user
+          showNotification('🔄 Switching to Tab Capture mode for DRM-protected content...', 'info');
+
+          // Wait a moment for cleanup
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Start Tab Capture API using existing TabAudioCaptureManager
+          try {
+            console.log('🔄 Switching to TabAudioCaptureManager (proper tab capture)...');
+
+            // Get source language from storage
+            const storedSettings = await new Promise((resolve) => {
+              chrome.storage.sync.get({ sourceLanguage: 'en' }, resolve);
+            });
+            const sourceLanguage = storedSettings.sourceLanguage || 'en';
+
+            // Use the existing TabAudioCaptureManager if available
+            if (!audioCaptureManager) {
+              console.log('📦 Creating new TabAudioCaptureManager...');
+              audioCaptureManager = new TabAudioCaptureManager(
+                handleLiveTranscript,
+                handleAudioCaptureError
+              );
+            }
+
+            // Request tab capture from background script (no screen share UI!)
+            const response = await new Promise((resolve) => {
+              chrome.runtime.sendMessage(
+                { action: 'startDirectTabCapture', sourceLanguage: sourceLanguage },
+                (response) => resolve(response)
+              );
+            });
+
+            if (response && response.error) {
+              throw new Error(response.error);
+            }
+
+            console.log('✅ Tab Capture fallback initiated successfully');
+            showNotification('✅ Using Tab Capture mode - no screen share needed!', 'success');
+
+            // Mark as active so future calls know it's running
+            isTabCaptureActive = true;
+
+          } catch (tabCaptureError) {
+            console.error('❌ Tab Capture fallback failed:', tabCaptureError);
+            showNotification('❌ Failed to start Tab Capture. Please reload and try again.', 'error');
+            isTabCaptureActive = false;
+          }
+        }
+      } else if (average >= SILENCE_THRESHOLD) {
+        // Audio detected - reset silence counter
+        silenceDetectionCount = 0;
+      }
+    }, 2000);
+
+    isTabCaptureActive = true;
+
+    // Get source language
+    chrome.storage.sync.get({ sourceLanguage: 'en' }, (result) => {
+      const sourceLanguage = result.sourceLanguage || 'en';
+
+      // Create MediaRecorder from the destination stream
+      // Note: Not specifying MIME type - let browser choose best format for Netflix compatibility
+      microphoneRecorder = new MediaRecorder(mediaStreamDestination.stream);
+
+      let currentChunk = null;
+      let chunkId = 0;
+
+      microphoneRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          currentChunk = event.data;
+          console.log(`🎤 Audio chunk ${chunkId}: ${(event.data.size / 1024).toFixed(2)} KB`);
+        }
+      };
+
+      microphoneRecorder.onstop = async () => {
+        if (currentChunk && currentChunk.size > 0) {
+          const audioBlob = currentChunk;
+
+          // Skip very small chunks (likely silence)
+          if (audioBlob.size >= 500) {
+            console.log(`📤 Processing chunk ${chunkId}: ${(audioBlob.size / 1024).toFixed(2)} KB`);
+
+            // Convert blob to base64
+            const reader = new FileReader();
+            reader.readAsDataURL(audioBlob);
+            reader.onloadend = async () => {
+              const base64Audio = reader.result.split(',')[1];
+
+              try {
+                // Send to backend for transcription
+                const response = await fetch(`${BACKEND_URL}/api/translation/speech-to-text`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    audioData: base64Audio,
+                    sourceLanguage: sourceLanguage
+                  })
+                });
+
+                if (!response.ok) {
+                  const errorText = await response.text();
+                  console.error('❌ Backend error:', response.status, errorText);
+                  return;
+                }
+
+                const data = await response.json();
+
+                if (data.success && data.transcript && data.transcript.trim()) {
+                  console.log(`📝 Transcript [${chunkId}]:`, data.transcript);
+                  // TODO: Add UI panel to display transcripts in future
+                } else {
+                  console.log(`⚠️ No transcript for chunk ${chunkId}`);
+                  console.log('Response data:', data);
+                }
+              } catch (error) {
+                console.error('❌ Transcription error:', error);
+              }
+            };
+          } else {
+            console.log(`⚠️ Chunk ${chunkId} too small (${audioBlob.size} bytes), skipping`);
+          }
+
+          currentChunk = null;
+          chunkId++;
+        }
+
+        // Immediately start next chunk if still recording
+        if (isTabCaptureActive && microphoneRecorder) {
+          microphoneRecorder.start();
+        }
+      };
+
+      // Start first recording
+      microphoneRecorder.start();
+      console.log('✅ MediaRecorder started');
+
+      // Set up interval to stop and restart recording (creates complete audio chunks)
+      const CHUNK_DURATION = 3000; // 3 seconds
+      const recordingIntervalId = setInterval(() => {
+        if (microphoneRecorder && microphoneRecorder.state === 'recording' && isTabCaptureActive) {
+          microphoneRecorder.stop(); // This triggers onstop which restarts
+        } else if (!isTabCaptureActive) {
+          clearInterval(recordingIntervalId);
+        }
+      }, CHUNK_DURATION);
+
+      console.log('✅ Audio capture started successfully with Web Audio API');
+      showNotification('✅ Audio is being captured and transcribed!', 'success');
+    });
+
+  } catch (error) {
+    console.error('❌ Audio capture error:', error);
+    showNotification(`❌ Audio capture failed: ${error.message}`, 'error');
+    isTabCaptureActive = false;
+  }
+}
+
+function stopMicrophoneCapture() {
+  console.log('🛑 Stopping audio capture...');
+
+  isTabCaptureActive = false;
+
+  if (microphoneRecorder) {
+    if (microphoneRecorder.state === 'recording') {
+      microphoneRecorder.stop();
+    }
+    microphoneRecorder = null;
+  }
+
+  // Disconnect Web Audio API nodes
+  if (mediaElementSource) {
+    mediaElementSource.disconnect();
+    mediaElementSource = null;
+  }
+
+  if (gainNode) {
+    gainNode.disconnect();
+    gainNode = null;
+  }
+
+  if (analyser) {
+    analyser.disconnect();
+    analyser = null;
+  }
+
+  if (mediaStreamDestination) {
+    mediaStreamDestination = null;
+  }
+
+  // Close audio context
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
+  }
+
+  if (microphoneStream) {
+    microphoneStream.getTracks().forEach(track => track.stop());
+    microphoneStream = null;
+  }
+
+  console.log('✅ Audio capture stopped and cleaned up');
 }
 
 // Message listener
@@ -1534,6 +1974,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     showNotification('✅ Live translation started! Audio is being captured and translated.', 'success');
   }
 
+  // Handle desktop capture error from background
+  if (message.action === 'desktopCaptureError') {
+    console.error('❌ Desktop capture error:', message.error);
+    showNotification('❌ Desktop capture failed: ' + message.error, 'error');
+    isTabCaptureActive = false;
+  }
+
   // Handle tab capture stopped from background
   if (message.action === 'tabCaptureStopped') {
     console.log('✅ Tab audio capture stopped in offscreen document');
@@ -1562,7 +2009,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Video change detection - using both interval and navigation events
 let lastVideoId = null;
-let loadingInProgress = false; // Prevent duplicate calls
 
 function handleVideoChange() {
   const videoId = getVideoId();

@@ -254,33 +254,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!tabId) {
       console.error('❌ No tab information available');
       sendResponse({ error: 'No tab information available' });
-      return true;
+      return false;
     }
 
-    // Use async IIFE to properly handle the response
-    (async () => {
-      try {
-        // Request desktop/window capture with system audio
-        const streamId = await new Promise((resolve) => {
-          chrome.desktopCapture.chooseDesktopMedia(
-            ['screen', 'window', 'audio'],
-            sender.tab,
-            resolve
-          );
-        });
-
+    // Request desktop/window capture with system audio
+    chrome.desktopCapture.chooseDesktopMedia(
+      ['screen', 'window', 'audio'],
+      sender.tab,
+      async (streamId) => {
         if (!streamId) {
           console.error('❌ User cancelled desktop capture or no streamId returned');
-          sendResponse({ error: 'Desktop capture cancelled by user' });
+          chrome.tabs.sendMessage(tabId, {
+            action: 'desktopCaptureError',
+            error: 'Desktop capture cancelled by user'
+          });
           return;
         }
 
         console.log('✅ Desktop capture streamId obtained:', streamId);
 
-        await setupOffscreenDocument();
+        try {
+          await setupOffscreenDocument();
 
-        // Send streamId to offscreen document to start capture
-        await new Promise((resolve, reject) => {
+          // Send streamId to offscreen document to start capture
           chrome.runtime.sendMessage({
             action: 'startCapture',
             stream: streamId,
@@ -289,28 +285,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }, () => {
             if (chrome.runtime.lastError) {
               console.error('❌ Failed to start desktop capture in offscreen:', chrome.runtime.lastError.message);
-              reject(new Error(chrome.runtime.lastError.message));
+              chrome.tabs.sendMessage(tabId, {
+                action: 'desktopCaptureError',
+                error: chrome.runtime.lastError.message
+              });
             } else {
               console.log('✅ Desktop capture started in offscreen document');
-              resolve();
+
+              // Notify content script
+              chrome.tabs.sendMessage(tabId, {
+                action: 'tabCaptureStarted',
+                captureType: 'desktop'
+              });
             }
           });
-        });
-
-        // Notify content script
-        chrome.tabs.sendMessage(tabId, {
-          action: 'tabCaptureStarted',
-          captureType: 'desktop'
-        });
-
-        sendResponse({ success: true, captureType: 'desktop' });
-      } catch (error) {
-        console.error('❌ Failed to start desktop capture:', error);
-        sendResponse({ error: error.message });
+        } catch (error) {
+          console.error('❌ Failed to setup offscreen document:', error);
+          chrome.tabs.sendMessage(tabId, {
+            action: 'desktopCaptureError',
+            error: error.message
+          });
+        }
       }
-    })();
+    );
 
-    return true; // Keep message channel open for async response
+    // Send immediate response to prevent message channel timeout
+    sendResponse({ success: true, message: 'Desktop capture request initiated' });
+    return false;
   }
 
   switch (message.type) {

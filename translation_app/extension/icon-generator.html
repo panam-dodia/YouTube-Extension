@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Icon Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 40px;
+            background: #1a1a2e;
+            color: white;
+        }
+        h1 { color: #00ff88; }
+        .icons {
+            display: flex;
+            gap: 30px;
+            margin: 30px 0;
+            flex-wrap: wrap;
+        }
+        .icon-container {
+            text-align: center;
+        }
+        canvas {
+            border: 2px solid #00ff88;
+            border-radius: 8px;
+            display: block;
+            margin-bottom: 10px;
+        }
+        button {
+            background: #00ff88;
+            color: black;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #00d4ff;
+        }
+        .instructions {
+            background: rgba(0, 255, 136, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 30px;
+            border-left: 3px solid #00ff88;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎵 Audio Analyzer - Icon Generator</h1>
+    <p>Right-click each icon and "Save image as..." with the exact filename shown below.</p>
+
+    <div class="icons">
+        <div class="icon-container">
+            <canvas id="icon16" width="16" height="16"></canvas>
+            <div>icon16.png</div>
+            <button onclick="downloadIcon('icon16')">Download</button>
+        </div>
+        <div class="icon-container">
+            <canvas id="icon48" width="48" height="48"></canvas>
+            <div>icon48.png</div>
+            <button onclick="downloadIcon('icon48')">Download</button>
+        </div>
+        <div class="icon-container">
+            <canvas id="icon128" width="128" height="128"></canvas>
+            <div>icon128.png</div>
+            <button onclick="downloadIcon('icon128')">Download</button>
+        </div>
+    </div>
+
+    <div class="instructions">
+        <h3>Instructions:</h3>
+        <ol>
+            <li>Click the "Download" button under each icon</li>
+            <li>Save them to the <strong>extension</strong> folder</li>
+            <li>Make sure the filenames are exactly: icon16.png, icon48.png, icon128.png</li>
+            <li>Then follow the INSTALL.txt instructions to load the extension</li>
+        </ol>
+    </div>
+
+    <script>
+        function drawIcon(canvasId) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const size = canvas.width;
+
+            // Background gradient
+            const gradient = ctx.createLinearGradient(0, 0, size, size);
+            gradient.addColorStop(0, '#00ff88');
+            gradient.addColorStop(1, '#00d4ff');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, size, size);
+
+            // Draw waveform symbol
+            ctx.strokeStyle = '#0f0c29';
+            ctx.lineWidth = Math.max(2, size / 16);
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            const padding = size * 0.2;
+            const width = size - padding * 2;
+            const height = size - padding * 2;
+            const centerY = size / 2;
+
+            ctx.beginPath();
+            ctx.moveTo(padding, centerY);
+
+            // Create sine wave
+            const segments = 8;
+            for (let i = 0; i <= segments; i++) {
+                const x = padding + (width / segments) * i;
+                const y = centerY + Math.sin(i * Math.PI / 2) * (height / 3);
+                ctx.lineTo(x, y);
+            }
+
+            ctx.stroke();
+        }
+
+        function downloadIcon(canvasId) {
+            const canvas = document.getElementById(canvasId);
+            const link = document.createElement('a');
+            link.download = canvasId + '.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }
+
+        // Draw all icons on page load
+        drawIcon('icon16');
+        drawIcon('icon48');
+        drawIcon('icon128');
+    </script>
+</body>
+</html>

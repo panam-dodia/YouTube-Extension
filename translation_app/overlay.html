@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Analyzer Overlay - Bookmarklet Generator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            padding: 40px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: #a0a0b0;
+            font-size: 1.1rem;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .card h2 {
+            color: #00ff88;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+        }
+
+        .instruction {
+            background: rgba(0, 255, 136, 0.1);
+            border-left: 3px solid #00ff88;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            line-height: 1.6;
+        }
+
+        .bookmarklet-container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .bookmarklet-link {
+            display: inline-block;
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+            color: #0f0c29;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1.1rem;
+            transition: transform 0.3s ease;
+            cursor: move;
+        }
+
+        .bookmarklet-link:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0, 255, 136, 0.3);
+        }
+
+        .steps {
+            list-style: none;
+            counter-reset: step-counter;
+        }
+
+        .steps li {
+            counter-increment: step-counter;
+            margin-bottom: 15px;
+            padding-left: 40px;
+            position: relative;
+            line-height: 1.6;
+        }
+
+        .steps li::before {
+            content: counter(step-counter);
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+            color: #0f0c29;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+        }
+
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #8338ec 0%, #ff006e 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: transform 0.3s ease;
+        }
+
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(131, 56, 236, 0.3);
+        }
+
+        .preview {
+            background: #1a1a2e;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .preview img {
+            width: 100%;
+            border-radius: 8px;
+        }
+
+        .note {
+            background: rgba(255, 190, 11, 0.1);
+            border-left: 3px solid #ffbe0b;
+            padding: 15px;
+            border-radius: 5px;
+            color: #ffbe0b;
+            margin-top: 20px;
+        }
+
+        code {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            color: #00ff88;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Audio Analyzer Overlay</h1>
+            <p class="subtitle">Capture and analyze audio from any webpage with a floating overlay</p>
+        </header>
+
+        <div class="card">
+            <h2>Method 1: Bookmarklet (Easiest)</h2>
+            <div class="instruction">
+                Drag this button to your bookmarks bar, then click it on any webpage with audio to activate the analyzer overlay ON THAT PAGE:
+            </div>
+            <div class="bookmarklet-container">
+                <a href="#" id="bookmarkletLink" class="bookmarklet-link">🎵 Audio Analyzer</a>
+            </div>
+            <ul class="steps">
+                <li>Drag the "🎵 Audio Analyzer" button above to your browser's bookmarks bar</li>
+                <li>Go to YouTube, Spotify, or any webpage with audio/video</li>
+                <li><strong>Play the audio/video first</strong></li>
+                <li>Click the bookmarklet - the overlay will appear on that same page!</li>
+                <li>Click "Start Capture" to analyze the audio playing on the page</li>
+            </ul>
+            <div class="note">
+                <strong>Note:</strong> The bookmarklet works by injecting the audio analyzer directly into the current page, so you can see visualizations while the audio plays!
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Method 2: Direct Launch</h2>
+            <div class="instruction">
+                Click this button to open a standalone page with the audio analyzer, then select which tab to capture:
+            </div>
+            <a href="index.html" class="button" target="_blank">Launch Audio Analyzer</a>
+        </div>
+
+        <div class="card">
+            <h2>Features</h2>
+            <ul class="steps">
+                <li><strong>Draggable Overlay:</strong> Move the analyzer anywhere on the screen</li>
+                <li><strong>Collapsible:</strong> Minimize when not in use</li>
+                <li><strong>Real-time Waveform:</strong> See audio amplitude over time</li>
+                <li><strong>Frequency Spectrum:</strong> Visual representation of audio frequencies</li>
+                <li><strong>Volume Meter:</strong> Dynamic volume level indicator</li>
+                <li><strong>Audio Analysis:</strong> Peak frequency, average volume, and more</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // Generate the bookmarklet code
+        const overlayScript = document.getElementById('overlayScript');
+        const bookmarkletCode = `javascript:(function(){
+            const script = document.createElement('script');
+            script.src = '${window.location.origin}/overlay-injector.js';
+            document.body.appendChild(script);
+        })();`;
+
+        document.getElementById('bookmarkletLink').href = bookmarkletCode;
+    </script>
+</body>
+</html>

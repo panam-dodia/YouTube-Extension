@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Live Video Translator",
+  "version": "1.0",
+  "description": "Translate video audio to any language in real-time using OpenAI",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

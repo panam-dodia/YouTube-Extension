@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser Audio Capture & Analyzer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Browser Audio Capture & Analyzer</h1>
+            <p class="subtitle">Capture and analyze audio from any browser tab</p>
+        </header>
+
+        <div class="controls">
+            <button id="startBtn" class="btn btn-primary">Start Capture</button>
+            <button id="stopBtn" class="btn btn-danger" disabled>Stop Capture</button>
+            <div class="status">
+                <span id="statusText">Ready to capture</span>
+            </div>
+        </div>
+
+        <div class="visualizations">
+            <div class="viz-section">
+                <h2>Waveform</h2>
+                <canvas id="waveformCanvas"></canvas>
+            </div>
+
+            <div class="viz-section">
+                <h2>Frequency Spectrum</h2>
+                <canvas id="spectrumCanvas"></canvas>
+            </div>
+
+            <div class="viz-section">
+                <h2>Volume Meter</h2>
+                <div class="volume-container">
+                    <div id="volumeMeter" class="volume-meter"></div>
+                    <span id="volumeText">0 dB</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="analysis-data">
+            <h2>Audio Analysis Data</h2>
+            <div class="data-grid">
+                <div class="data-item">
+                    <span class="data-label">Peak Frequency:</span>
+                    <span id="peakFreq" class="data-value">0 Hz</span>
+                </div>
+                <div class="data-item">
+                    <span class="data-label">Average Volume:</span>
+                    <span id="avgVolume" class="data-value">0 dB</span>
+                </div>
+                <div class="data-item">
+                    <span class="data-label">Sample Rate:</span>
+                    <span id="sampleRate" class="data-value">N/A</span>
+                </div>
+                <div class="data-item">
+                    <span class="data-label">Channels:</span>
+                    <span id="channels" class="data-value">N/A</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="info">
+            <h3>How to use:</h3>
+            <ol>
+                <li>Click "Start Capture"</li>
+                <li>Select the browser tab you want to capture audio from</li>
+                <li>Make sure to check "Share audio" in the permission dialog</li>
+                <li>The app will visualize and analyze the audio in real-time</li>
+            </ol>
+            <p class="note"><strong>Note:</strong> This uses the browser's getDisplayMedia API, which requires user permission and HTTPS (or localhost).</p>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Analyzer - Bookmarklet</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            padding: 40px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            max-width: 700px;
+            width: 100%;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: #a0a0b0;
+            font-size: 1.1rem;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .bookmarklet-link {
+            display: inline-block;
+            padding: 20px 40px;
+            background: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+            color: #0f0c29;
+            text-decoration: none;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 1.3rem;
+            transition: transform 0.3s ease;
+            cursor: move;
+            box-shadow: 0 10px 30px rgba(0, 255, 136, 0.3);
+        }
+
+        .bookmarklet-link:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(0, 255, 136, 0.4);
+        }
+
+        .bookmarklet-container {
+            text-align: center;
+            padding: 30px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+
+        .steps {
+            list-style: none;
+            counter-reset: step-counter;
+        }
+
+        .steps li {
+            counter-increment: step-counter;
+            margin-bottom: 15px;
+            padding-left: 40px;
+            position: relative;
+            line-height: 1.8;
+        }
+
+        .steps li::before {
+            content: counter(step-counter);
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+            color: #0f0c29;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .note {
+            background: rgba(255, 190, 11, 0.1);
+            border-left: 3px solid #ffbe0b;
+            padding: 15px;
+            border-radius: 5px;
+            color: #ffbe0b;
+            margin-top: 20px;
+        }
+
+        strong {
+            color: #00ff88;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎵 Audio Analyzer</h1>
+            <p class="subtitle">Analyze audio from any webpage</p>
+        </header>
+
+        <div class="card">
+            <h2 style="color: #00ff88; margin-bottom: 20px;">Setup Instructions</h2>
+
+            <div class="bookmarklet-container">
+                <a href="javascript:void(0);" id="bookmarklet" class="bookmarklet-link">
+                    🎵 Audio Analyzer
+                </a>
+                <p style="margin-top: 15px; color: #a0a0b0; font-size: 14px;">
+                    ↑ Drag this to your bookmarks bar
+                </p>
+            </div>
+
+            <ul class="steps">
+                <li>Drag the button above to your browser's bookmarks bar</li>
+                <li>Go to <strong>YouTube</strong>, <strong>Spotify</strong>, or any page with audio</li>
+                <li><strong>Play the audio/video first</strong></li>
+                <li>Click the bookmarklet from your bookmarks</li>
+                <li>The overlay will appear on the page - click "Start Capture"!</li>
+            </ul>
+
+            <div class="note">
+                <strong>💡 Tip:</strong> Make sure audio is playing before you click "Start Capture". The analyzer detects audio/video elements on the page automatically.
+            </div>
+        </div>
+    </div>
+
+    <script id="overlay-code">
+// This will be embedded in the bookmarklet
+const overlayCode = `
+(function() {
+    const existing = document.getElementById('audio-analyzer-overlay');
+    if (existing) {
+        existing.style.display = 'block';
+        alert('Audio Analyzer is already open!');
+        return;
+    }
+    window.audioAnalyzerOverlay = true;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'audio-analyzer-overlay';
+    overlay.innerHTML = \`
+        <div class="overlay-header">
+            <div class="overlay-title"><span>🎵</span> Audio Analyzer</div>
+            <div class="overlay-controls">
+                <button class="control-btn minimize-btn" title="Minimize">−</button>
+                <button class="control-btn close-btn" title="Close">×</button>
+            </div>
+        </div>
+        <div class="overlay-content">
+            <div class="overlay-buttons">
+                <button id="overlay-start-btn" class="overlay-btn btn-start">Start Capture</button>
+                <button id="overlay-stop-btn" class="overlay-btn btn-stop" disabled>Stop</button>
+            </div>
+            <div class="overlay-status"><span id="overlay-status-text">Ready</span></div>
+            <div class="overlay-visualizations">
+                <div class="viz-panel"><div class="viz-header">Waveform</div><canvas id="overlay-waveform"></canvas></div>
+                <div class="viz-panel"><div class="viz-header">Spectrum</div><canvas id="overlay-spectrum"></canvas></div>
+                <div class="viz-panel"><div class="viz-header">Volume</div><div class="volume-display"><div id="overlay-volume-bar" class="volume-bar"></div></div><div id="overlay-volume-text" class="volume-text">0 dB</div></div>
+            </div>
+            <div class="overlay-data">
+                <div class="data-row"><span class="data-label">Peak Freq:</span><span id="overlay-peak-freq" class="data-value">0 Hz</span></div>
+                <div class="data-row"><span class="data-label">Avg Vol:</span><span id="overlay-avg-volume" class="data-value">0 dB</span></div>
+            </div>
+        </div>
+    \`;
+
+    const style = document.createElement('style');
+    style.textContent = \`
+        #audio-analyzer-overlay{position:fixed;top:20px;right:20px;width:400px;background:linear-gradient(135deg,rgba(15,12,41,0.98),rgba(48,43,99,0.98));border-radius:15px;box-shadow:0 20px 60px rgba(0,0,0,0.5);z-index:2147483647;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;color:white;backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.2);overflow:hidden}
+        #audio-analyzer-overlay *{box-sizing:border-box}
+        #audio-analyzer-overlay.minimized .overlay-content{display:none}
+        #audio-analyzer-overlay.minimized{width:250px}
+        .overlay-header{display:flex;justify-content:space-between;align-items:center;padding:12px 15px;background:rgba(0,255,136,0.1);border-bottom:1px solid rgba(255,255,255,0.1);cursor:move;user-select:none}
+        .overlay-title{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px}
+        .overlay-controls{display:flex;gap:5px}
+        .control-btn{width:24px;height:24px;border:none;background:rgba(255,255,255,0.1);color:white;border-radius:4px;cursor:pointer;font-size:18px;line-height:1;display:flex;align-items:center;justify-content:center;transition:background 0.2s}
+        .control-btn:hover{background:rgba(255,255,255,0.2)}
+        .close-btn:hover{background:rgba(255,0,110,0.5)}
+        .overlay-content{padding:15px}
+        .overlay-buttons{display:flex;gap:10px;margin-bottom:12px}
+        .overlay-btn{flex:1;padding:10px;border:none;border-radius:6px;font-weight:600;font-size:12px;cursor:pointer;transition:all 0.2s;text-transform:uppercase}
+        .overlay-btn:disabled{opacity:0.5;cursor:not-allowed}
+        .btn-start{background:linear-gradient(135deg,#00ff88,#00d4ff);color:#0f0c29}
+        .btn-start:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 5px 15px rgba(0,255,136,0.3)}
+        .btn-stop{background:linear-gradient(135deg,#ff006e,#ff4d6d);color:white}
+        .btn-stop:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 5px 15px rgba(255,0,110,0.3)}
+        .overlay-status{text-align:center;padding:8px;font-size:12px;margin-bottom:12px;border-radius:6px;background:rgba(255,255,255,0.05)}
+        .overlay-visualizations{display:flex;flex-direction:column;gap:12px;margin-bottom:12px}
+        .viz-panel{background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;border:1px solid rgba(255,255,255,0.1)}
+        .viz-header{font-size:11px;color:#00ff88;margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
+        .overlay-visualizations canvas{width:100%;height:80px;border-radius:6px;background:#1a1a2e;display:block}
+        .volume-display{width:100%;height:30px;background:#1a1a2e;border-radius:6px;overflow:hidden;margin-bottom:8px}
+        .volume-bar{height:100%;width:0%;background:#00ff88;transition:width 0.1s ease,background-color 0.3s ease;box-shadow:0 0 10px currentColor}
+        .volume-text{text-align:center;font-weight:600;font-size:13px;color:#00ff88}
+        .overlay-data{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+        .data-row{background:rgba(255,255,255,0.05);padding:10px;border-radius:6px;border-left:2px solid #00ff88}
+        .data-label{display:block;font-size:10px;color:#a0a0b0;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px}
+        .data-value{display:block;font-size:14px;font-weight:700;color:#00ff88;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .status-success{color:#00ff88}.status-error{color:#ff006e}.status-warning{color:#ffbe0b}
+    \`;
+
+    document.head.appendChild(style);
+    document.body.appendChild(overlay);
+
+    let isDragging=false,currentX,currentY,initialX,initialY;
+    const header=overlay.querySelector('.overlay-header');
+    header.addEventListener('mousedown',e=>{if(!e.target.closest('.overlay-controls')){initialX=e.clientX-overlay.offsetLeft;initialY=e.clientY-overlay.offsetTop;isDragging=true}});
+    document.addEventListener('mousemove',e=>{if(isDragging){e.preventDefault();currentX=e.clientX-initialX;currentY=e.clientY-initialY;overlay.style.left=currentX+'px';overlay.style.top=currentY+'px';overlay.style.right='auto'}});
+    document.addEventListener('mouseup',()=>isDragging=false);
+
+    overlay.querySelector('.minimize-btn').addEventListener('click',()=>overlay.classList.toggle('minimized'));
+    overlay.querySelector('.close-btn').addEventListener('click',()=>{if(analyzer&&analyzer.audioContext)analyzer.stopCapture();overlay.remove();delete window.audioAnalyzerOverlay});
+
+    class OverlayAudioAnalyzer{
+        constructor(){this.audioContext=null;this.analyser=null;this.source=null;this.animationId=null;this.mediaElement=null;this.waveformCanvas=document.getElementById('overlay-waveform');this.spectrumCanvas=document.getElementById('overlay-spectrum');this.waveformCtx=this.waveformCanvas.getContext('2d');this.spectrumCtx=this.spectrumCanvas.getContext('2d');this.startBtn=document.getElementById('overlay-start-btn');this.stopBtn=document.getElementById('overlay-stop-btn');this.statusText=document.getElementById('overlay-status-text');this.volumeBar=document.getElementById('overlay-volume-bar');this.volumeText=document.getElementById('overlay-volume-text');this.peakFreq=document.getElementById('overlay-peak-freq');this.avgVolume=document.getElementById('overlay-avg-volume');this.initializeCanvases();this.setupEventListeners()}
+        initializeCanvases(){this.waveformCanvas.width=this.waveformCanvas.offsetWidth*2;this.waveformCanvas.height=160;this.spectrumCanvas.width=this.spectrumCanvas.offsetWidth*2;this.spectrumCanvas.height=160}
+        setupEventListeners(){this.startBtn.addEventListener('click',()=>this.startCapture());this.stopBtn.addEventListener('click',()=>this.stopCapture())}
+        findMediaElements(){const mediaElements=[...document.querySelectorAll('audio'),...document.querySelectorAll('video')];return mediaElements.filter(el=>!el.paused||el.readyState>=2)}
+        async startCapture(){try{this.updateStatus('Searching...','warning');const mediaElements=this.findMediaElements();if(mediaElements.length===0){this.updateStatus('No audio found. Play first!','error');setTimeout(()=>this.updateStatus('Ready','info'),3000);return}this.mediaElement=mediaElements[0];this.audioContext=new(window.AudioContext||window.webkitAudioContext)();this.analyser=this.audioContext.createAnalyser();this.analyser.fftSize=2048;this.analyser.smoothingTimeConstant=0.8;if(!this.mediaElement._audioSource){this.source=this.audioContext.createMediaElementSource(this.mediaElement);this.mediaElement._audioSource=this.source;this.source.connect(this.analyser);this.source.connect(this.audioContext.destination)}else{this.source=this.mediaElement._audioSource;this.source.connect(this.analyser)}this.startBtn.disabled=true;this.stopBtn.disabled=false;this.updateStatus('● Capturing','success');this.visualize()}catch(error){console.error('Error:',error);if(error.name==='InvalidStateError'){this.updateStatus('Already connected. Refresh page.','error')}else{this.updateStatus(\`Error: \${error.message}\`,'error')}this.resetUI()}}
+        stopCapture(){if(this.source){try{this.source.disconnect(this.analyser)}catch(e){}}if(this.analyser)this.analyser=null;if(this.audioContext&&this.audioContext.state!=='closed'){this.audioContext.close();this.audioContext=null}if(this.animationId){cancelAnimationFrame(this.animationId);this.animationId=null}this.mediaElement=null;this.source=null;this.resetUI();this.updateStatus('Stopped','info');this.clearCanvases()}
+        visualize(){const bufferLength=this.analyser.frequencyBinCount;const timeData=new Uint8Array(bufferLength);const freqData=new Uint8Array(bufferLength);const draw=()=>{this.animationId=requestAnimationFrame(draw);this.analyser.getByteTimeDomainData(timeData);this.analyser.getByteFrequencyData(freqData);this.drawWaveform(timeData);this.drawSpectrum(freqData);this.updateVolume(timeData);this.updateAnalysis(freqData,timeData)};draw()}
+        drawWaveform(dataArray){const canvas=this.waveformCanvas;const ctx=this.waveformCtx;const width=canvas.width;const height=canvas.height;ctx.fillStyle='#1a1a2e';ctx.fillRect(0,0,width,height);ctx.lineWidth=2;ctx.strokeStyle='#00ff88';ctx.beginPath();const sliceWidth=width/dataArray.length;let x=0;for(let i=0;i<dataArray.length;i++){const v=dataArray[i]/128.0;const y=(v*height)/2;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);x+=sliceWidth}ctx.lineTo(width,height/2);ctx.stroke()}
+        drawSpectrum(dataArray){const canvas=this.spectrumCanvas;const ctx=this.spectrumCtx;const width=canvas.width;const height=canvas.height;ctx.fillStyle='#1a1a2e';ctx.fillRect(0,0,width,height);const barWidth=(width/dataArray.length)*2.5;let x=0;for(let i=0;i<dataArray.length;i++){const barHeight=(dataArray[i]/255)*height;const gradient=ctx.createLinearGradient(0,height-barHeight,0,height);gradient.addColorStop(0,'#ff006e');gradient.addColorStop(0.5,'#8338ec');gradient.addColorStop(1,'#3a86ff');ctx.fillStyle=gradient;ctx.fillRect(x,height-barHeight,barWidth,barHeight);x+=barWidth+1}}
+        updateVolume(dataArray){let sum=0;for(let i=0;i<dataArray.length;i++){const normalized=(dataArray[i]-128)/128;sum+=normalized*normalized}const rms=Math.sqrt(sum/dataArray.length);const db=20*Math.log10(rms);const normalizedVolume=Math.max(0,Math.min(100,(db+60)*(100/60)));this.volumeBar.style.width=normalizedVolume+'%';if(normalizedVolume>80)this.volumeBar.style.backgroundColor='#ff006e';else if(normalizedVolume>50)this.volumeBar.style.backgroundColor='#ffbe0b';else this.volumeBar.style.backgroundColor='#00ff88';this.volumeText.textContent=db>-60?db.toFixed(1)+' dB':'-∞ dB'}
+        updateAnalysis(freqData,timeData){let maxValue=0,maxIndex=0;for(let i=0;i<freqData.length;i++){if(freqData[i]>maxValue){maxValue=freqData[i];maxIndex=i}}const nyquist=this.audioContext.sampleRate/2;const peakFrequency=(maxIndex*nyquist)/freqData.length;this.peakFreq.textContent=peakFrequency.toFixed(0)+' Hz';let sum=0;for(let i=0;i<timeData.length;i++){const normalized=(timeData[i]-128)/128;sum+=normalized*normalized}const rms=Math.sqrt(sum/timeData.length);const db=20*Math.log10(rms);this.avgVolume.textContent=db>-60?db.toFixed(1)+' dB':'-∞ dB'}
+        updateStatus(message,type){this.statusText.textContent=message;this.statusText.className='status-'+type}
+        resetUI(){this.startBtn.disabled=false;this.stopBtn.disabled=true}
+        clearCanvases(){this.waveformCtx.fillStyle='#1a1a2e';this.waveformCtx.fillRect(0,0,this.waveformCanvas.width,this.waveformCanvas.height);this.spectrumCtx.fillStyle='#1a1a2e';this.spectrumCtx.fillRect(0,0,this.spectrumCanvas.width,this.spectrumCanvas.height);this.volumeBar.style.width='0%';this.volumeText.textContent='0 dB';this.peakFreq.textContent='0 Hz';this.avgVolume.textContent='0 dB'}
+    }
+    const analyzer=new OverlayAudioAnalyzer();
+})();
+`;
+
+        // Generate and set the bookmarklet
+        const bookmarkletCode = 'javascript:' + encodeURIComponent(overlayCode);
+        document.getElementById('bookmarklet').href = bookmarkletCode;
+    </script>
+</body>
+</html>
