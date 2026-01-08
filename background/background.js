@@ -231,8 +231,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log('✅ Tab capture stopped successfully');
 
         // Notify content script
-        if (message.tabId) {
-          chrome.tabs.sendMessage(message.tabId, {
+        const tabId = message.tabId || sender.tab?.id;
+        if (tabId) {
+          chrome.tabs.sendMessage(tabId, {
             action: 'tabCaptureStopped'
           });
         }
@@ -242,6 +243,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
 
     return true; // Keep message channel open for async response
+  }
+
+  // Handle transcript relay from offscreen document to content script
+  if (message.action === 'relayTranscript') {
+    console.log('📨 Relaying transcript from offscreen to content script');
+
+    // Find the tab that initiated the capture
+    // We'll send to all tabs for now, content script will filter
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs.length > 0) {
+        chrome.tabs.sendMessage(tabs[0].id, {
+          action: 'transcriptReceived',
+          transcript: message.transcript
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error('❌ Failed to send transcript to content script:', chrome.runtime.lastError.message);
+          } else {
+            console.log('✅ Transcript delivered to content script');
+          }
+        });
+      }
+    });
+
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle audio playback request from content script to offscreen document
+  if (message.action === 'playTranslatedAudio') {
+    console.log('📨 Forwarding audio to offscreen document for playback');
+
+    // Forward to offscreen document
+    chrome.runtime.sendMessage({
+      action: 'playTranslatedAudio',
+      audioData: message.audioData,
+      text: message.text
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('❌ Failed to send audio to offscreen:', chrome.runtime.lastError.message);
+      } else {
+        console.log('✅ Audio forwarded to offscreen');
+      }
+    });
+
+    sendResponse({ success: true });
+    return true;
   }
 
   // Handle desktop capture request (fallback for Netflix and videos without transcripts)

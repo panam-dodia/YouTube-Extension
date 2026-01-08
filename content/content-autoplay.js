@@ -43,6 +43,45 @@ let analyser = null;
 let mediaStreamDestination = null;
 let loadingInProgress = false; // Prevent duplicate calls to loadVideoFeatures()
 
+// Audio playback queue for live dubbing
+let audioQueue = [];
+let isPlayingAudio = false;
+let currentPlayingAudio = null;
+
+// Web Audio API for reliable audio playback
+let audioContextForPlayback = null;
+let originalVideoVolume = 1.0;
+
+// Buffering system for smooth playback
+let transcriptBuffer = []; // Buffer 2-3 transcripts before starting playback
+let isBuffering = true; // Start in buffering mode
+let processedTranscripts = new Set(); // Track processed transcripts to prevent duplicates
+const LIVE_BUFFER_SIZE = 2; // Number of transcripts to buffer before starting live translation
+
+// Test function to verify audio output
+function testAudioOutput() {
+  console.log('🧪 Testing audio output with simple beep...');
+
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const oscillator = ctx.createOscillator();
+  const gainNode = ctx.createGain();
+
+  oscillator.connect(gainNode);
+  gainNode.connect(ctx.destination);
+
+  oscillator.frequency.value = 440; // A4 note
+  gainNode.gain.value = 0.3; // 30% volume
+
+  oscillator.start();
+  setTimeout(() => {
+    oscillator.stop();
+    console.log('🧪 Beep test finished. Did you hear it?');
+  }, 500);
+}
+
+// Expose test function to console
+window.testAudioOutput = testAudioOutput;
+
 // Initialize extension
 async function init() {
   const stored = await chrome.storage.sync.get({
@@ -262,10 +301,185 @@ async function detectSpeakerGender() {
   }
 }
 
+// Listen for messages from offscreen document and background script
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('📨 Content script received message:', message.action);
+
+  // Handle transcript received from offscreen document
+  if (message.action === 'transcriptReceived') {
+    handleLiveTranscript(message.transcript);
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle tab capture started confirmation
+  if (message.action === 'tabCaptureStarted') {
+    console.log('✅ Tab capture started successfully');
+    isTabCaptureActive = true;
+
+    // Lower original video volume (not mute) to keep audio routing active
+    const video = document.querySelector('video');
+    if (video) {
+      originalVideoVolume = video.volume; // Save original volume
+      video.volume = 0.01; // Lower to near-zero instead of muting
+      console.log(`🔉 Original video volume lowered to 0.01 (was ${originalVideoVolume})`);
+    }
+
+    // Initialize Web Audio API for playback
+    if (!audioContextForPlayback) {
+      try {
+        audioContextForPlayback = new (window.AudioContext || window.webkitAudioContext)();
+        console.log('🎵 AudioContext created for translated audio playback');
+      } catch (error) {
+        console.error('❌ Failed to create AudioContext:', error);
+      }
+    }
+
+    showNotification('🎙️ Live translation started', 'success');
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle tab capture stopped confirmation
+  if (message.action === 'tabCaptureStopped') {
+    console.log('🛑 Tab capture stopped');
+    isTabCaptureActive = false;
+
+    // Restore original video volume
+    const video = document.querySelector('video');
+    if (video) {
+      video.volume = originalVideoVolume;
+      console.log(`🔊 Original video volume restored to ${originalVideoVolume}`);
+    }
+
+    // Stop any currently playing audio (BufferSource)
+    if (currentPlayingAudio) {
+      try {
+        currentPlayingAudio.stop();
+      } catch (e) {
+        // Already stopped or finished
+      }
+      currentPlayingAudio = null;
+    }
+
+    // Clear audio queue
+    audioQueue = [];
+    isPlayingAudio = false;
+
+    // Reset buffering system
+    transcriptBuffer = [];
+    isBuffering = true;
+    processedTranscripts.clear();
+    console.log('🔄 Buffering system reset');
+
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle settings update from popup
+  if (message.type === 'UPDATE_SETTINGS') {
+    settings = message.settings;
+    console.log('⚙️ Settings updated:', settings);
+    sendResponse({ success: true });
+    return true;
+  }
+
+  return true;
+});
+
+// Audio queue management for seamless playback
+async function playNextAudio() {
+  if (audioQueue.length === 0) {
+    isPlayingAudio = false;
+    console.log('📭 Audio queue empty, playback stopped');
+    return;
+  }
+
+  isPlayingAudio = true;
+  const audioData = audioQueue.shift();
+
+  console.log(`🔊 Playing translated audio: "${audioData.text.substring(0, 50)}..."`);
+  console.log(`   Audio blob size: ${(audioData.blob.size / 1024).toFixed(2)} KB`);
+  console.log(`   Audio blob type: ${audioData.blob.type}`);
+
+  try {
+    // Ensure AudioContext exists
+    if (!audioContextForPlayback) {
+      audioContextForPlayback = new (window.AudioContext || window.webkitAudioContext)();
+      console.log('🎵 AudioContext created');
+    }
+
+    console.log(`🔍 AudioContext state: ${audioContextForPlayback.state}`);
+    console.log(`🔍 AudioContext sampleRate: ${audioContextForPlayback.sampleRate} Hz`);
+    console.log(`🔍 AudioContext currentTime: ${audioContextForPlayback.currentTime.toFixed(2)}s`);
+
+    // Resume AudioContext if suspended (Chrome autoplay policy)
+    if (audioContextForPlayback.state === 'suspended') {
+      await audioContextForPlayback.resume();
+      console.log(`▶️ AudioContext resumed, new state: ${audioContextForPlayback.state}`);
+    }
+
+    // Decode audio blob into AudioBuffer (proper Web Audio API approach)
+    const arrayBuffer = await audioData.blob.arrayBuffer();
+    console.log(`🔍 ArrayBuffer size: ${arrayBuffer.byteLength} bytes`);
+
+    const audioBuffer = await audioContextForPlayback.decodeAudioData(arrayBuffer);
+
+    console.log(`   Audio decoded: ${audioBuffer.duration.toFixed(2)} seconds, ${audioBuffer.numberOfChannels} channels`);
+    console.log(`🔍 AudioBuffer sampleRate: ${audioBuffer.sampleRate} Hz`);
+    console.log(`🔍 AudioBuffer length: ${audioBuffer.length} samples`);
+
+    // Create buffer source node
+    const source = audioContextForPlayback.createBufferSource();
+    source.buffer = audioBuffer;
+
+    // Create gain node for volume control
+    const gainNode = audioContextForPlayback.createGain();
+    gainNode.gain.value = 1.0; // Maximum volume
+
+    console.log(`🔍 GainNode gain value: ${gainNode.gain.value}`);
+
+    // Route: source -> gain -> destination (speakers)
+    source.connect(gainNode);
+    gainNode.connect(audioContextForPlayback.destination);
+
+    console.log('🔌 Audio connected: BufferSource -> Gain -> Speakers');
+    console.log(`🔍 AudioContext destination maxChannelCount: ${audioContextForPlayback.destination.maxChannelCount}`);
+    console.log(`🔍 AudioContext destination channelCount: ${audioContextForPlayback.destination.channelCount}`);
+
+    // Handle playback end
+    source.onended = () => {
+      console.log('✅ Audio playback finished');
+      playNextAudio(); // Play next in queue
+    };
+
+    // Start playback
+    source.start(0);
+    currentPlayingAudio = source; // Store reference for stopping
+    console.log('▶️ Audio playback started via AudioContext');
+    console.log(`🔍 Playback should finish at: ${(audioContextForPlayback.currentTime + audioBuffer.duration).toFixed(2)}s`);
+
+  } catch (err) {
+    console.error('❌ Failed to play audio:', err);
+    console.error('   Error name:', err.name);
+    console.error('   Error message:', err.message);
+    currentPlayingAudio = null;
+    playNextAudio();
+  }
+}
+
 // Handler for live transcript chunks from audio capture
 async function handleLiveTranscript(transcriptChunk) {
   try {
     const { text, confidence, timestamp, language } = transcriptChunk;
+
+    // Deduplication: Check if we've already processed this exact transcript
+    const transcriptId = `${text}_${timestamp}`;
+    if (processedTranscripts.has(transcriptId)) {
+      console.log('⏭️ Skipping duplicate transcript');
+      return;
+    }
+    processedTranscripts.add(transcriptId);
 
     console.log(`📝 Live transcript: "${text}" (confidence: ${(confidence * 100).toFixed(1)}%)`);
 
@@ -285,7 +499,49 @@ async function handleLiveTranscript(transcriptChunk) {
       return;
     }
 
+    // Only buffer during initial buffering phase
+    if (isBuffering) {
+      transcriptBuffer.push({ text, confidence, timestamp, language });
+      console.log(`📦 Buffered transcript (${transcriptBuffer.length}/${LIVE_BUFFER_SIZE})`);
+
+      // Wait until we have enough transcripts
+      if (transcriptBuffer.length < LIVE_BUFFER_SIZE) {
+        console.log('⏸️ Buffering... waiting for more transcripts');
+        return;
+      }
+
+      // Buffer full - process all and exit buffering mode
+      console.log('✅ Buffer full! Starting smooth playback...');
+      isBuffering = false;
+      await processBufferedTranscripts();
+      return;
+    }
+
+    // After buffering phase - process immediately without buffering
+    console.log('⚡ Processing immediately (post-buffer)');
+    await processTranscript(text, timestamp);
+
+  } catch (error) {
+    console.error('❌ Error handling live transcript:', error);
+  }
+}
+
+// Process buffered transcripts (called once buffer is full)
+async function processBufferedTranscripts() {
+  console.log(`🎬 Processing ${transcriptBuffer.length} buffered transcripts...`);
+
+  for (const transcript of transcriptBuffer) {
+    await processTranscript(transcript.text, transcript.timestamp);
+  }
+
+  transcriptBuffer = []; // Clear buffer after processing
+}
+
+// Process a single transcript (translation + TTS)
+async function processTranscript(text, timestamp) {
+  try {
     // Translate the text
+    console.log(`🌐 Translating to ${settings.targetLanguage}...`);
     const response = await fetch(`${API_URL}/api/translation/translate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -302,8 +558,10 @@ async function handleLiveTranscript(transcriptChunk) {
 
     const data = await response.json();
     const translatedText = data.translatedText;
+    console.log(`✅ Translated: "${translatedText}"`);
 
     // Generate audio for the translation
+    console.log(`🎤 Generating TTS audio in ${settings.targetLanguage}...`);
     const audioResponse = await fetch(`${API_URL}/api/translation/text-to-speech`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -316,17 +574,42 @@ async function handleLiveTranscript(transcriptChunk) {
 
     if (audioResponse.ok) {
       const audioBlob = await audioResponse.blob();
+      console.log(`✅ TTS audio generated: ${(audioBlob.size / 1024).toFixed(2)} KB`);
 
-      // Play the audio immediately
-      const audio = new Audio(URL.createObjectURL(audioBlob));
-      audio.play();
+      // Convert blob to base64 for sending to offscreen document (optimized)
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      const chunkSize = 0x8000; // Process in 32KB chunks for faster encoding
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+      }
+      const base64Audio = btoa(binary);
+
+      console.log('📤 Sending audio to offscreen document for playback...');
+
+      // Send audio to offscreen document to play (not captured by tab capture)
+      chrome.runtime.sendMessage({
+        action: 'playTranslatedAudio',
+        audioData: base64Audio,
+        text: translatedText
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('❌ Failed to send audio to offscreen:', chrome.runtime.lastError.message);
+        } else {
+          console.log('✅ Audio sent to offscreen for playback');
+        }
+      });
 
       // Display the translation
       displayLiveTranscript(text, translatedText, timestamp, false);
+
+    } else {
+      console.error('❌ TTS generation failed:', audioResponse.statusText);
     }
 
   } catch (error) {
-    console.error('Error handling live transcript:', error);
+    console.error('❌ Error processing transcript:', error);
   }
 }
 
@@ -601,12 +884,6 @@ function createUnifiedPanel() {
               <div class="progress-text" id="progress-text">0%</div>
             </div>
             <div class="playback-controls">
-              <button id="translation-toggle-btn" class="control-btn">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z"/>
-                </svg>
-                <span>Start Translation</span>
-              </button>
               <button id="play-btn" class="control-btn" style="display: none;">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z"/>
@@ -619,6 +896,9 @@ function createUnifiedPanel() {
                 </svg>
                 <span>Pause</span>
               </button>
+            </div>
+            <div class="instruction-text" style="padding: 10px; text-align: center; color: #888; font-size: 12px;">
+              Click the TalkBridge extension icon to start/stop translation
             </div>
           </div>
         </div>
@@ -680,104 +960,8 @@ function createUnifiedPanel() {
     fab.classList.remove('active');
   });
 
-  // Translation toggle control
-  let isTranslationActive = false;
-  let isTogglingTranslation = false; // Prevent double-click
-  const translationToggleBtn = document.getElementById('translation-toggle-btn');
-
-  if (translationToggleBtn) {
-    translationToggleBtn.addEventListener('click', async () => {
-      // Prevent double-clicking
-      if (isTogglingTranslation) {
-        console.log('⚠️ Already toggling translation, ignoring click');
-        return;
-      }
-
-      isTogglingTranslation = true;
-      isTranslationActive = !isTranslationActive;
-      console.log('🔄 Translation toggle state:', isTranslationActive);
-
-      const btnText = translationToggleBtn.querySelector('span');
-      const btnIcon = translationToggleBtn.querySelector('svg path');
-
-      if (isTranslationActive) {
-        // Start translation
-        btnText.textContent = 'Pause Translation';
-        btnIcon.setAttribute('d', 'M6 4h4v16H6V4zm8 0h4v16h-4V4z'); // Pause icon
-        console.log('▶️ Starting translation...');
-
-        // For live audio mode, start microphone capture
-        if (transcriptionMode === 'live') {
-          try {
-            await startMicrophoneCapture();
-
-            // Mute original video audio (user will hear translated audio)
-            if (gainNode) {
-              gainNode.gain.value = 0.0;
-              console.log('🔇 Original audio muted for translation');
-            } else {
-              console.warn('⚠️ gainNode not available, original audio not muted');
-            }
-
-            showNotification('🎤 Translation started! You\'ll hear translated audio.', 'success');
-          } catch (error) {
-            console.error('❌ Failed to start audio capture:', error);
-            showNotification('❌ Failed to start audio capture. Please try again.', 'error');
-            // Reset button state
-            isTranslationActive = false;
-            btnText.textContent = 'Start Translation';
-            btnIcon.setAttribute('d', 'M8 5v14l11-7z');
-          }
-          isTogglingTranslation = false;
-          return;
-        }
-
-        // Reset toggle flag
-        isTogglingTranslation = false;
-      } else {
-        // Pause translation
-        btnText.textContent = 'Start Translation';
-        btnIcon.setAttribute('d', 'M8 5v14l11-7z'); // Play icon
-        console.log('⏸️ Pausing translation...');
-
-        // For live audio mode, stop microphone capture
-        if (transcriptionMode === 'live') {
-          stopMicrophoneCapture();
-
-          // Unmute original video audio (user will hear original audio)
-          if (gainNode) {
-            gainNode.gain.value = 1.0;
-            console.log('🔊 Original audio restored');
-          }
-
-          if (audioCaptureManager) {
-            audioCaptureManager.stopCapture();
-          }
-
-          // Stop offscreen document capture
-          chrome.runtime.sendMessage({
-            action: 'stopTabCapture',
-            tabId: chrome.runtime.id
-          }, (response) => {
-            if (chrome.runtime.lastError) {
-              console.error('❌ Failed to stop tab capture:', chrome.runtime.lastError.message);
-              // Still mark as inactive locally
-              isTabCaptureActive = false;
-              showNotification('⚠️ Failed to stop tab capture', 'error');
-            } else if (response && response.success) {
-              console.log('✅ Tab capture stopped successfully');
-              // State will be updated when tabCaptureStopped message is received
-            }
-          });
-
-          showNotification('⏸️ Translation paused. Hearing original audio.', 'info');
-        }
-
-        // Reset toggle flag
-        isTogglingTranslation = false;
-      }
-    });
-  }
+  // Translation control is now handled by the extension popup
+  // No button in floating panel - users click extension icon to start/stop
 
   // Playback controls
   document.getElementById('play-btn')?.addEventListener('click', resumePlayback);
@@ -1960,15 +2144,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       createUnifiedPanel();
     }
 
-    // Update the translation toggle button state if it exists
-    const translationToggleBtn = document.getElementById('translation-toggle-btn');
-    if (translationToggleBtn) {
-      const btnText = translationToggleBtn.querySelector('span');
-      const btnIcon = translationToggleBtn.querySelector('svg path');
-      btnText.textContent = 'Stop Translation';
-      btnIcon.setAttribute('d', 'M6 4h4v16H6V4zm8 0h4v16h-4V4z'); // Stop icon
-      window.isTranslationActive = true;
-    }
+    // Mark translation as active
+    window.isTranslationActive = true;
 
     // Show success notification
     showNotification('✅ Live translation started! Audio is being captured and translated.', 'success');
@@ -1985,26 +2162,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'tabCaptureStopped') {
     console.log('✅ Tab audio capture stopped in offscreen document');
     isTabCaptureActive = false; // Mark capture as inactive
-
-    // Update the translation toggle button state if it exists
-    const translationToggleBtn = document.getElementById('translation-toggle-btn');
-    if (translationToggleBtn) {
-      const btnText = translationToggleBtn.querySelector('span');
-      const btnIcon = translationToggleBtn.querySelector('svg path');
-      btnText.textContent = 'Start Translation';
-      btnIcon.setAttribute('d', 'M8 5v14l11-7z'); // Play icon
-      window.isTranslationActive = false;
-    }
+    window.isTranslationActive = false;
 
     // Show notification
     showNotification('⏸️ Translation stopped', 'info');
   }
 
-  // Handle transcript received from offscreen document
-  if (message.action === 'transcriptReceived') {
-    console.log('📥 Received transcript from offscreen:', message.transcript);
-    handleLiveTranscript(message.transcript);
-  }
+  // Duplicate handler removed - already handled at line 303
 });
 
 // Video change detection - using both interval and navigation events

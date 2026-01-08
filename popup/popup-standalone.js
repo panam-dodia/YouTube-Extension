@@ -186,8 +186,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (response && response.success) {
               console.log('✅ Translation started successfully');
-              startTranslationButton.textContent = 'Translation Active ✓';
-              startTranslationButton.style.background = '#4caf50';
+
+              // Toggle button visibility
+              startTranslationButton.style.display = 'none';
+              stopTranslationButton.style.display = 'block';
+              stopTranslationButton.textContent = 'Stop Translation';
+              stopTranslationButton.disabled = false;
 
               // Auto-close popup after 1 second
               setTimeout(() => {
@@ -209,6 +213,56 @@ document.addEventListener('DOMContentLoaded', async () => {
       alert('Error: ' + error.message);
     }
   });
+
+  // Stop Translation
+  const stopTranslationButton = document.getElementById('stop-translation');
+  if (stopTranslationButton) {
+    stopTranslationButton.addEventListener('click', async () => {
+      try {
+        console.log('🛑 Stop Translation button clicked');
+
+        // Visual feedback
+        stopTranslationButton.textContent = 'Stopping...';
+        stopTranslationButton.disabled = true;
+
+        // Send message to background script to stop tab capture
+        chrome.runtime.sendMessage({
+          action: 'stopTabCapture'
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error('❌ Failed to stop:', chrome.runtime.lastError.message);
+            stopTranslationButton.textContent = 'Stop Translation';
+            stopTranslationButton.disabled = false;
+            return;
+          }
+
+          if (response && response.success) {
+            console.log('✅ Translation stopped successfully');
+
+            // Toggle button visibility
+            startTranslationButton.style.display = 'block';
+            stopTranslationButton.style.display = 'none';
+            startTranslationButton.textContent = 'Start Translation';
+            startTranslationButton.style.background = '';
+            startTranslationButton.disabled = false;
+
+            // Auto-close popup after 1 second
+            setTimeout(() => {
+              window.close();
+            }, 1000);
+          } else {
+            console.error('❌ Failed to stop translation:', response?.error);
+            stopTranslationButton.textContent = 'Stop Translation';
+            stopTranslationButton.disabled = false;
+          }
+        });
+      } catch (error) {
+        console.error('❌ Error stopping translation:', error);
+        stopTranslationButton.textContent = 'Stop Translation';
+        stopTranslationButton.disabled = false;
+      }
+    });
+  }
 
   // Save settings
   saveButton.addEventListener('click', async () => {

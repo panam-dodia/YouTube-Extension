@@ -6,10 +6,16 @@ console.log('📄 Offscreen document loaded');
 let mediaRecorder = null;
 let audioChunks = [];
 let isCapturing = false;
-let chunkDuration = 5000;
+let chunkDuration = 3000; // 3s chunks for more complete sentences (balance between latency and quality)
 let currentLanguage = 'en';
 let chunkInterval = null;
 let mediaStream = null;
+
+// Audio playback queue for translated audio (not captured by tab capture)
+let audioPlaybackQueue = [];
+let isPlayingTranslatedAudio = false;
+let audioContext = null;
+let playedAudioTexts = new Set(); // Track played audio to prevent duplicates
 
 // Listen for messages from background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -23,6 +29,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'stopCapture') {
     stopCapture();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.action === 'playTranslatedAudio') {
+    playTranslatedAudio(message.audioData, message.text);
     sendResponse({ success: true });
     return true;
   }
@@ -84,6 +96,11 @@ async function startCapture(streamId, sourceLanguage = 'en', captureType = 'tab'
         if (sizeKB < 5) {
           console.log('⚠️ Audio chunk too small, likely silence. Skipping transcription.');
           audioChunks = [];
+
+          // Restart MediaRecorder if still capturing
+          if (isCapturing && mediaRecorder && mediaRecorder.state === 'inactive') {
+            mediaRecorder.start();
+          }
           return;
         }
 
@@ -91,6 +108,12 @@ async function startCapture(streamId, sourceLanguage = 'en', captureType = 'tab'
 
         // Send to transcription via content script
         await transcribeChunk(audioBlob);
+      }
+
+      // Restart MediaRecorder after processing if still capturing
+      if (isCapturing && mediaRecorder && mediaRecorder.state === 'inactive') {
+        audioChunks = [];
+        mediaRecorder.start();
       }
     };
 
@@ -100,17 +123,10 @@ async function startCapture(streamId, sourceLanguage = 'en', captureType = 'tab'
 
     console.log('✅ MediaRecorder started');
 
-    // Stop and restart periodically to create chunks
+    // Stop periodically to create chunks (MediaRecorder will auto-restart in onstop)
     chunkInterval = setInterval(() => {
       if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
-        // Restart after a brief pause
-        setTimeout(() => {
-          if (isCapturing && mediaRecorder) {
-            audioChunks = [];
-            mediaRecorder.start();
-          }
-        }, 250);
       }
     }, chunkDuration);
 
@@ -146,6 +162,11 @@ function stopCapture() {
 
   mediaRecorder = null;
   audioChunks = [];
+
+  // Clear audio playback tracking
+  audioPlaybackQueue = [];
+  isPlayingTranslatedAudio = false;
+  playedAudioTexts.clear();
 
   console.log('✅ Offscreen audio capture stopped successfully');
 }
@@ -184,14 +205,21 @@ async function transcribeChunk(audioBlob) {
     if (result.success && result.transcript && result.transcript.trim()) {
       console.log(`✅ Transcript received: "${result.transcript}"`);
 
-      // Send transcript to content script
+      // Send transcript to background script which will relay to content script
+      // We need to query for the active tab since offscreen doc doesn't have direct access
       chrome.runtime.sendMessage({
-        action: 'transcriptReceived',
+        action: 'relayTranscript',
         transcript: {
           text: result.transcript,
           confidence: result.confidence,
           timestamp: Date.now(),
           language: result.language
+        }
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('❌ Failed to relay transcript:', chrome.runtime.lastError.message);
+        } else {
+          console.log('✅ Transcript relayed to content script');
         }
       });
     } else {
@@ -199,5 +227,90 @@ async function transcribeChunk(audioBlob) {
     }
   } catch (error) {
     console.error('❌ Transcription error:', error);
+  }
+}
+
+// Play translated audio in offscreen document (not captured by tab capture)
+async function playTranslatedAudio(base64Audio, text) {
+  // Deduplication: Check if we've already played this exact text
+  if (playedAudioTexts.has(text)) {
+    console.log('⏭️ [Offscreen] Skipping duplicate audio:', text.substring(0, 50));
+    return;
+  }
+
+  playedAudioTexts.add(text);
+
+  // Add to queue
+  audioPlaybackQueue.push({ base64Audio, text });
+
+  // Start playing if not already playing
+  if (!isPlayingTranslatedAudio) {
+    playNextInQueue();
+  }
+}
+
+async function playNextInQueue() {
+  if (audioPlaybackQueue.length === 0) {
+    isPlayingTranslatedAudio = false;
+    console.log('📭 [Offscreen] Audio queue empty');
+    return;
+  }
+
+  isPlayingTranslatedAudio = true;
+  const { base64Audio, text } = audioPlaybackQueue.shift();
+
+  console.log(`🔊 [Offscreen] Playing: "${text.substring(0, 50)}..." (${audioPlaybackQueue.length} in queue)`);
+
+  try {
+    // Decode base64 to blob (optimized)
+    const binaryString = atob(base64Audio);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+
+    // Initialize AudioContext if needed
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      console.log('🎵 [Offscreen] AudioContext created');
+    }
+
+    // Resume if suspended
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume();
+    }
+
+    // Decode audio
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+    console.log(`   [Offscreen] ${audioBuffer.duration.toFixed(2)}s, ${(audioBlob.size / 1024).toFixed(1)} KB`);
+
+    // Create buffer source
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+
+    // Create gain node
+    const gainNode = audioContext.createGain();
+    gainNode.gain.value = 1.0;
+
+    // Connect: source -> gain -> speakers
+    source.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    // Play next when finished
+    source.onended = () => {
+      console.log('✅ [Offscreen] Finished');
+      playNextInQueue(); // Play next in queue
+    };
+
+    // Start playback
+    source.start(0);
+    console.log('▶️ [Offscreen] Playing');
+
+  } catch (error) {
+    console.error('❌ [Offscreen] Playback error:', error);
+    playNextInQueue(); // Try next audio on error
   }
 }
