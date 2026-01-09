@@ -376,6 +376,61 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === 'notifyMicrophoneFallback') {
+    console.log('🎙️ Microphone fallback triggered');
+    showNotification('🎙️ Switching to microphone input for transcription', 'warning', 8000);
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.action === 'notifyMicrophoneFailed') {
+    console.log('🎙️ Microphone fallback failed:', message.error);
+
+    if (message.error.includes('Permission') || message.error.includes('NotAllowed')) {
+      showNotification('❌ Microphone access denied. Please allow microphone permissions.', 'error', 10000);
+    } else {
+      showNotification('❌ Microphone fallback failed. Please check your microphone and try again.', 'error', 8000);
+    }
+
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Check if page has media elements
+  if (message.action === 'checkForMedia') {
+    const mediaElements = document.querySelectorAll('video, audio');
+    sendResponse({ hasMedia: mediaElements.length > 0 });
+    return true;
+  }
+
+  // Handle Web Audio API capture start from popup
+  if (message.action === 'startWebAudioCapture') {
+    console.log('🎵 Starting Web Audio API capture from popup...');
+
+    (async () => {
+      try {
+        const success = await startMicrophoneCapture();
+
+        if (success !== false) {
+          sendResponse({ success: true });
+        } else {
+          sendResponse({
+            success: false,
+            error: 'Failed to start audio capture. Make sure video is playing.'
+          });
+        }
+      } catch (error) {
+        console.error('❌ Error starting Web Audio capture:', error);
+        sendResponse({
+          success: false,
+          error: error.message
+        });
+      }
+    })();
+
+    return true; // Keep message channel open for async response
+  }
+
   // Handle settings update from popup
   if (message.type === 'UPDATE_SETTINGS') {
     settings = message.settings;
@@ -1962,6 +2017,23 @@ async function startMicrophoneCapture() {
     }, 2000);
 
     isTabCaptureActive = true;
+
+    // Lower original video volume (not mute) to prevent echo/feedback
+    if (mediaElement && mediaElement.volume !== undefined) {
+      originalVideoVolume = mediaElement.volume;
+      mediaElement.volume = 0.01; // Lower to near-zero
+      console.log(`🔉 Video volume lowered to 0.01 (was ${originalVideoVolume})`);
+    }
+
+    // Initialize Web Audio API for playback if not already done
+    if (!audioContextForPlayback) {
+      try {
+        audioContextForPlayback = new (window.AudioContext || window.webkitAudioContext)();
+        console.log('🎵 AudioContext created for translated audio playback');
+      } catch (error) {
+        console.error('❌ Failed to create AudioContext:', error);
+      }
+    }
 
     // Get source language
     chrome.storage.sync.get({ sourceLanguage: 'en' }, (result) => {

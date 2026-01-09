@@ -11,6 +11,11 @@ let currentLanguage = 'en';
 let chunkInterval = null;
 let mediaStream = null;
 
+let captureMode = 'tab'; // 'tab' or 'desktop'
+let smallChunkCount = 0;
+let failedChucksBeforeFallback = 2;
+let hasSwitchedToMicrophone = false;
+
 // Audio playback queue for translated audio (not captured by tab capture)
 let audioPlaybackQueue = [];
 let isPlayingTranslatedAudio = false;
@@ -71,13 +76,23 @@ async function startCapture(streamId, sourceLanguage = 'en', captureType = 'tab'
       console.log('🔍 Track settings:', track.getSettings());
     }
 
+    const audioContextForCapture = new (window.AudioContext || window.webkitAudioContext)();
+    const tabSource = audioContextForCapture.createMediaStreamSource(mediaStream);
+    
+    const destination = audioContextForCapture.createMediaStreamDestination();
+
+    tabSource.connect(destination);
+
+    tabSource.connect(audioContextForCapture.destination); // Optional: connect to destination for monitoring
+    console.log('✅ Audio routed: tab -> recording + speakers');
+
     // Create media recorder
     const options = {
       mimeType: 'audio/webm;codecs=opus',
       audioBitsPerSecond: 128000
     };
 
-    mediaRecorder = new MediaRecorder(mediaStream, options);
+    mediaRecorder = new MediaRecorder(destination.stream, options);
 
     mediaRecorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
@@ -90,12 +105,28 @@ async function startCapture(streamId, sourceLanguage = 'en', captureType = 'tab'
       if (audioChunks.length > 0) {
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
         const sizeKB = audioBlob.size / 1024;
-        console.log(`🎵 Audio chunk captured: ${sizeKB.toFixed(2)} KB`);
+        console.log(`🎵 Audio chunk captured: ${sizeKB.toFixed(2)} KB (mode: ${captureMode})`);
 
         // Check if audio chunk is too small (likely silence)
         if (sizeKB < 5) {
-          console.log('⚠️ Audio chunk too small, likely silence. Skipping transcription.');
+          smallChunkCount++;
+          console.log(`⚠️ Audio chunk too small (${smallChunkCount}/${failedChucksBeforeFallback}). Likely silence or system doesnt support audio loopback`);
           audioChunks = [];
+
+          if (captureMode === 'tab' && smallChunkCount >= failedChucksBeforeFallback && !hasSwitchedToMicrophone) {
+            console.log('⚠️ Tab audio capture not working. System may not support audio loopback.');
+            hasSwitchedToMicrophone = true;
+
+            // Notify user that tab capture isn't working and suggest desktop capture
+            chrome.runtime.sendMessage({
+              action: 'notifyTabCaptureNotWorking',
+              message: 'Tab audio capture is not supported on this system. Please use desktop capture mode instead.'
+            });
+
+            // Stop the failed capture
+            stopCapture();
+            return;
+          }
 
           // Restart MediaRecorder if still capturing
           if (isCapturing && mediaRecorder && mediaRecorder.state === 'inactive') {
@@ -104,6 +135,7 @@ async function startCapture(streamId, sourceLanguage = 'en', captureType = 'tab'
           return;
         }
 
+        smallChunkCount = 0; // Reset counter on valid chunk
         audioChunks = [];
 
         // Send to transcription via content script
@@ -314,3 +346,7 @@ async function playNextInQueue() {
     playNextInQueue(); // Try next audio on error
   }
 }
+
+// Note: Microphone capture is not supported in offscreen documents
+// because they cannot request permissions from the user.
+// Users should use desktop capture mode instead, which is already supported.

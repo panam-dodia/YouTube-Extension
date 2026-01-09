@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "TalkBridge - YouTube Translator & Q&A",
+  "name": "TalkBridge - Universal Video Translator",
   "version": "1.0.0",
-  "description": "Real-time YouTube video translation with AI voice dubbing and intelligent Q&A",
+  "description": "Real-time video translation with AI voice dubbing for YouTube, Netflix, and all video sites",
   "permissions": [
     "storage",
     "tabs",
@@ -10,6 +10,10 @@
     "tabCapture",
     "desktopCapture",
     "offscreen"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
   ],
   "host_permissions": [
     "https://*/*",

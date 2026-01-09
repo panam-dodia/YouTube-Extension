@@ -5,7 +5,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const targetLanguage = document.getElementById('target-language');
   const enableTranslation = document.getElementById('enable-translation');
   const enableQA = document.getElementById('enable-qa');
-  const enableDubbing = document.getElementById('enable-dubbing');
   const saveButton = document.getElementById('save-settings');
   const startTranslationButton = document.getElementById('start-translation');
 
@@ -13,24 +12,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   const settings = await chrome.storage.sync.get({
     targetLanguage: 'English',
     enableTranslation: false,
-    enableQA: false,
-    enableDubbing: false
+    enableQA: false
   });
 
   targetLanguage.value = settings.targetLanguage;
   enableTranslation.checked = settings.enableTranslation;
   enableQA.checked = settings.enableQA;
-  enableDubbing.checked = settings.enableDubbing;
 
-  // Check if current tab is YouTube
+  // Check if current tab has video/audio elements
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab.url && tab.url.includes('youtube.com/watch')) {
-    statusIndicator.classList.remove('inactive');
-    statusIndicator.classList.add('active');
-    statusText.textContent = 'Active on YouTube';
+  if (tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+    // Check if page has video elements
+    try {
+      const result = await chrome.tabs.sendMessage(tab.id, { action: 'checkForMedia' });
+      if (result && result.hasMedia) {
+        statusIndicator.classList.remove('inactive');
+        statusIndicator.classList.add('active');
+        statusText.textContent = 'Ready - Video detected';
+      }
+    } catch (e) {
+      // Content script not loaded yet, that's ok
+    }
   }
 
-  // Start Translation - handles tab audio capture with user gesture
+  // Start Translation - uses Web Audio API for reliable video audio capture
   startTranslationButton.addEventListener('click', async () => {
     try {
       console.log('🎬 Start Translation button clicked');
@@ -42,46 +47,42 @@ document.addEventListener('DOMContentLoaded', async () => {
         throw new Error('No active tab found');
       }
 
+      // Check if on a valid web page
+      if (!tab.url || !(tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+        alert('Please navigate to a video page first.');
+        return;
+      }
+
       // Visual feedback - starting
       startTranslationButton.textContent = 'Starting...';
       startTranslationButton.disabled = true;
 
-      // Request tab capture stream ID (user gesture is preserved here in popup context)
-      chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id }, async (streamId) => {
+      // Get source language from settings
+      const settings = await chrome.storage.sync.get({ sourceLanguage: 'en' });
+
+      // Send message to content script to start Web Audio API capture
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'startWebAudioCapture',
+        sourceLanguage: settings.sourceLanguage
+      }, (response) => {
         if (chrome.runtime.lastError) {
-          console.error('❌ Failed to get stream ID:', chrome.runtime.lastError.message);
+          console.error('❌ Failed to send message:', chrome.runtime.lastError.message);
           startTranslationButton.textContent = 'Start Translation';
           startTranslationButton.disabled = false;
-          alert('Failed to start translation: ' + chrome.runtime.lastError.message);
+          alert('Failed to start translation. Make sure the page is fully loaded.');
           return;
         }
 
-        console.log('✅ Got stream ID:', streamId);
-
-        // Send streamId to background script to relay to content script
-        chrome.runtime.sendMessage({
-          action: 'startTabCapture',
-          streamId: streamId,
-          tabId: tab.id
-        }, (response) => {
-          if (chrome.runtime.lastError) {
-            console.error('❌ Failed to send message:', chrome.runtime.lastError.message);
-            startTranslationButton.textContent = 'Start Translation';
-            startTranslationButton.disabled = false;
-            return;
-          }
-
-          if (response && response.success) {
-            console.log('✅ Translation started successfully');
-            startTranslationButton.textContent = 'Translation Active';
-            startTranslationButton.style.background = '#4caf50';
-          } else {
-            console.error('❌ Failed to start translation:', response?.error);
-            startTranslationButton.textContent = 'Start Translation';
-            startTranslationButton.disabled = false;
-            alert('Failed to start translation: ' + (response?.error || 'Unknown error'));
-          }
-        });
+        if (response && response.success) {
+          console.log('✅ Translation started successfully');
+          startTranslationButton.textContent = 'Translation Active';
+          startTranslationButton.style.background = '#4caf50';
+        } else {
+          console.error('❌ Failed to start translation:', response?.error);
+          startTranslationButton.textContent = 'Start Translation';
+          startTranslationButton.disabled = false;
+          alert('Failed to start translation: ' + (response?.error || 'Video element not found. Make sure video is playing.'));
+        }
       });
     } catch (error) {
       console.error('❌ Error starting translation:', error);
@@ -96,8 +97,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const newSettings = {
       targetLanguage: targetLanguage.value,
       enableTranslation: enableTranslation.checked,
-      enableQA: enableQA.checked,
-      enableDubbing: enableDubbing.checked
+      enableQA: enableQA.checked
     };
 
     await chrome.storage.sync.set(newSettings);

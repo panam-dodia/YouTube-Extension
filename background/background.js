@@ -361,6 +361,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  // Handle tab capture not working notification
+  if (message.action === 'notifyTabCaptureNotWorking') {
+    console.warn('⚠️ Tab audio capture not working:', message.message);
+
+    // Notify the content script to show user a message
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs.length > 0) {
+        chrome.tabs.sendMessage(tabs[0].id, {
+          action: 'showTabCaptureError',
+          message: message.message
+        });
+      }
+    });
+
+    sendResponse({ success: true });
+    return true;
+  }
+
   switch (message.type) {
     case 'FETCH_TRANSCRIPT':
       // Future: Handle transcript fetching in background if needed
