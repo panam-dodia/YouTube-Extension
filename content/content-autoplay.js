@@ -193,6 +193,16 @@ async function loadVideoFeatures() {
       if (transcriptionMode === 'transcript') {
         console.log('🔇 Muting video for translation (transcript mode)');
         youtubeVideo.muted = true;
+
+        // Disconnect Web Audio API output to prevent echo
+        if (gainNode && audioContext) {
+          try {
+            gainNode.disconnect(audioContext.destination);
+            console.log('🔇 Disconnected Web Audio API output to prevent echo');
+          } catch (e) {
+            // Already disconnected or never connected
+          }
+        }
       } else if (transcriptionMode === 'live') {
         // In live tab capture mode, DO NOT mute video - tab capture needs audio to be playing
         console.log('🔊 Keeping video unmuted for tab audio capture');
@@ -758,12 +768,20 @@ function getYouTubePlayer() {
 
     // Keep video muted when translation is active (transcript mode only)
     youtubeVideo.addEventListener('volumechange', () => {
-      // Keep muted ONLY in transcript mode - live tab capture needs audio
+      // Keep muted ONLY in transcript mode with translated audio - live tab capture needs audio
       if (settings.enableTranslation && settings.targetLanguage &&
           transcriptionMode === 'transcript' &&
+          audioMode === 'translated' &&
           !youtubeVideo.muted) {
         console.log('🔇 Keeping YouTube video muted during translation (transcript mode)');
         youtubeVideo.muted = true;
+
+        // Also ensure Web Audio API is disconnected
+        if (gainNode && audioContext) {
+          try {
+            gainNode.disconnect(audioContext.destination);
+          } catch (e) {}
+        }
       }
     });
 
@@ -938,15 +956,6 @@ function createUnifiedPanel() {
                 <span class="mode-text">Translated Audio</span>
                 <span class="mode-hint">Alt+A</span>
               </button>
-            </div>
-            <p id="translation-status-text">Select a video to get started</p>
-            <div class="progress-container" id="progress-container" style="display: none;">
-              <div class="progress-bar">
-                <div class="progress-fill" id="progress-fill"></div>
-              </div>
-              <div class="progress-text" id="progress-text">0%</div>
-            </div>
-            <div class="playback-controls">
               <button id="play-btn" class="control-btn" style="display: none;">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z"/>
@@ -959,6 +968,13 @@ function createUnifiedPanel() {
                 </svg>
                 <span>Pause</span>
               </button>
+            </div>
+            <p id="translation-status-text">Select a video to get started</p>
+            <div class="progress-container" id="progress-container" style="display: none;">
+              <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+              </div>
+              <div class="progress-text" id="progress-text">0%</div>
             </div>
           </div>
         </div>
@@ -996,11 +1012,19 @@ function createUnifiedPanel() {
     translateGreeting();
   }
 
-  // Populate transcript tab
+  // Populate transcript tab with deduplication
   const transcriptList = document.getElementById('transcript-list');
   if (transcriptList && transcript) {
+    const seenTexts = new Set();
     transcript.forEach((segment, index) => {
-      addTranscriptItem(index, segment, transcriptList);
+      // Normalize text for comparison to detect duplicates
+      const normalizedText = segment.text.toLowerCase().trim().replace(/[^\w\s]/g, '').replace(/\s+/g, '');
+
+      // Only add if we haven't seen this exact text before
+      if (!seenTexts.has(normalizedText) && segment.text.trim()) {
+        seenTexts.add(normalizedText);
+        addTranscriptItem(index, segment, transcriptList);
+      }
     });
   }
 
@@ -1058,24 +1082,47 @@ function switchTab(tabName) {
   });
 }
 
+// Update audio mode button text based on playback state
+function updateAudioModeButtonText() {
+  const btn = document.getElementById('audio-mode-btn');
+  const text = btn?.querySelector('.mode-text');
+  if (!text) return;
+
+  if (audioMode === 'translated') {
+    text.textContent = isPlaying ? 'Playing Translated Audio' : 'Translated Audio';
+  } else {
+    text.textContent = isPlaying ? 'Playing Original Audio' : 'Original Audio';
+  }
+}
+
 // Toggle audio mode between translated and original
 function toggleAudioMode() {
   const btn = document.getElementById('audio-mode-btn');
   const icon = btn?.querySelector('.mode-icon');
-  const text = btn?.querySelector('.mode-text');
 
   if (audioMode === 'translated') {
     // Switch to original audio
     audioMode = 'original';
     if (icon) icon.textContent = '🎧';
-    if (text) text.textContent = 'Original Audio';
     btn?.classList.add('original-mode');
+    updateAudioModeButtonText();
 
     // Unmute video, pause translated audio
     if (youtubeVideo) {
       youtubeVideo.muted = false;
       youtubeVideo.volume = originalVideoVolume || 1.0;
     }
+
+    // Reconnect Web Audio API for original audio playback
+    if (gainNode && audioContext) {
+      try {
+        gainNode.connect(audioContext.destination);
+        console.log('🔊 Reconnected Web Audio API output for original audio');
+      } catch (e) {
+        // Already connected
+      }
+    }
+
     if (currentAudio && !currentAudio.paused) {
       currentAudio.pause();
     }
@@ -1087,14 +1134,25 @@ function toggleAudioMode() {
     // Switch to translated audio
     audioMode = 'translated';
     if (icon) icon.textContent = '🔊';
-    if (text) text.textContent = 'Translated Audio';
     btn?.classList.remove('original-mode');
+    updateAudioModeButtonText();
 
     // Mute video, resume translated audio
     if (youtubeVideo) {
       originalVideoVolume = youtubeVideo.volume;
       youtubeVideo.muted = true;
     }
+
+    // Disconnect Web Audio API to prevent echo
+    if (gainNode && audioContext) {
+      try {
+        gainNode.disconnect(audioContext.destination);
+        console.log('🔇 Disconnected Web Audio API output for translated audio');
+      } catch (e) {
+        // Already disconnected
+      }
+    }
+
     if (currentAudio && currentAudio.paused && isPlaying) {
       currentAudio.play();
     }
@@ -1392,10 +1450,30 @@ async function autoStartPlayback() {
     if (audioMode === 'translated') {
       console.log(`🔇 Muting YouTube video (translated mode)`);
       youtubeVideo.muted = true;
+
+      // Also disconnect Web Audio API if it's connected
+      if (gainNode && audioContext) {
+        try {
+          gainNode.disconnect(audioContext.destination);
+          console.log('🔇 Disconnected Web Audio API output');
+        } catch (e) {
+          // Already disconnected, that's fine
+        }
+      }
     } else {
       console.log(`🔊 Unmuting YouTube video (original mode)`);
       youtubeVideo.muted = false;
       youtubeVideo.volume = originalVideoVolume || 1.0;
+
+      // Reconnect Web Audio API if it was disconnected
+      if (gainNode && audioContext) {
+        try {
+          gainNode.connect(audioContext.destination);
+          console.log('🔊 Reconnected Web Audio API output');
+        } catch (e) {
+          // Already connected, that's fine
+        }
+      }
     }
     youtubeVideo.play();
   } else {
@@ -1403,6 +1481,18 @@ async function autoStartPlayback() {
     getYouTubePlayer();
     if (youtubeVideo) {
       youtubeVideo.muted = (audioMode === 'translated');
+
+      // Handle Web Audio API connection
+      if (audioMode === 'translated' && gainNode && audioContext) {
+        try {
+          gainNode.disconnect(audioContext.destination);
+        } catch (e) {}
+      } else if (audioMode === 'original' && gainNode && audioContext) {
+        try {
+          gainNode.connect(audioContext.destination);
+        } catch (e) {}
+      }
+
       youtubeVideo.play();
     }
   }
@@ -1414,12 +1504,19 @@ async function autoStartPlayback() {
   if (pauseBtn) pauseBtn.style.display = 'flex';
 
   isPlaying = true;
+  updateAudioModeButtonText();
   console.log(`▶️ Starting playback from segment ${currentSegmentIndex} with ${startAudioOffset.toFixed(1)}s offset`);
   await playNextSegment(startAudioOffset);
 }
 
 async function playNextSegment(audioOffset = 0) {
   if (!isPlaying || currentSegmentIndex >= groupedSentences.length) {
+    return;
+  }
+
+  // Prevent multiple playback chains
+  if (currentAudio && !currentAudio.paused && !currentAudio.ended) {
+    console.log('⚠️ Audio already playing, skipping duplicate playNextSegment call');
     return;
   }
 
@@ -1436,6 +1533,7 @@ async function playNextSegment(audioOffset = 0) {
   if (!audioCache.has(currentSegmentIndex)) {
     // No more segments
     isPlaying = false;
+    updateAudioModeButtonText();
     document.getElementById('play-btn').style.display = 'flex';
     document.getElementById('pause-btn').style.display = 'none';
     return;
@@ -1504,6 +1602,7 @@ function pausePlayback() {
   isSyncingPlayback = true;
 
   isPlaying = false;
+  updateAudioModeButtonText();
 
   if (currentAudio && !currentAudio.paused) {
     currentAudio.pause();
@@ -1527,6 +1626,7 @@ function resumePlayback() {
   isSyncingPlayback = true;
 
   isPlaying = true;
+  updateAudioModeButtonText();
 
   if (currentAudio && currentAudio.paused) {
     currentAudio.play().catch(err => console.log('Audio play error:', err));
@@ -1541,7 +1641,8 @@ function resumePlayback() {
   if (playBtn) playBtn.style.display = 'none';
   if (pauseBtn) pauseBtn.style.display = 'flex';
 
-  if (!currentAudio) {
+  // Only start playback if there's no audio AND no audio is currently playing
+  if (!currentAudio || (currentAudio.paused && currentAudio.ended)) {
     playNextSegment();
   }
 

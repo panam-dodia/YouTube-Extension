@@ -33,8 +33,8 @@
   position: fixed;
   bottom: 28px;
   right: 28px;
-  width: 68px;
-  height: 68px;
+  width: 56px;
+  height: 56px;
   background: var(--tb-gradient);
   border-radius: 50%;
   box-shadow: var(--tb-shadow-lg), 0 0 0 0 var(--tb-accent-glow);
@@ -70,7 +70,7 @@
 }
 
 .fab-icon {
-  font-size: 34px;
+  font-size: 28px;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
   animation: fabFloat 3.5s ease-in-out infinite;
 }
@@ -82,7 +82,7 @@
 
 .fab-tooltip {
   position: absolute;
-  right: 82px;
+  right: 70px;
   background: var(--tb-primary);
   color: white;
   padding: 10px 16px;
@@ -106,8 +106,8 @@
   position: fixed;
   bottom: 90px;
   right: 28px;
-  width: 420px;
-  height: 650px;
+  width: 380px;
+  height: 580px;
   background: var(--tb-surface);
   border-radius: var(--tb-radius-xl);
   box-shadow: var(--tb-shadow-lg);
@@ -223,34 +223,36 @@
 .panel-tabs {
   display: flex;
   background: var(--tb-surface-elevated);
-  padding: 12px;
-  gap: 6px;
+  padding: 10px 8px;
+  gap: 4px;
   border-bottom: 1px solid var(--tb-border);
 }
 
 .tab-btn {
   flex: 1;
-  padding: 14px 18px;
+  padding: 14px 8px;
   background: transparent;
   border: none;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--tb-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 6px;
   border-radius: var(--tb-radius-md);
   transition: var(--tb-transition);
   position: relative;
+  min-width: 0;
 }
 
 .tab-btn svg {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   opacity: 0.5;
   transition: var(--tb-transition);
+  flex-shrink: 0;
 }
 
 .tab-btn:hover {
@@ -288,13 +290,10 @@
 }
 
 .tab-btn span {
-  display: none;
-}
-
-@media (min-width: 400px) {
-  .tab-btn span {
-    display: inline;
-  }
+  display: inline;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ========== Content Area ========== */
@@ -322,7 +321,7 @@
 .translation-controls {
   position: sticky;
   bottom: 0;
-  padding: 24px;
+  padding: 16px;
   background: var(--tb-surface);
   border-top: 1px solid var(--tb-border);
   z-index: 10;
@@ -331,27 +330,31 @@
 
 /* Audio Mode Toggle */
 .audio-mode-toggle {
-  margin-bottom: 18px;
+  margin-bottom: 8px;
   display: flex;
   justify-content: center;
+  gap: 12px;
+  align-items: center;
 }
 
 .audio-toggle-btn {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 20px;
+  gap: 8px;
+  padding: 10px 16px;
+  padding-right: 32px;
   background: var(--tb-gradient);
   color: white;
   border: 2px solid rgba(0, 212, 255, 0.3);
   border-radius: var(--tb-radius-md);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   transition: var(--tb-transition);
   box-shadow: var(--tb-shadow-sm);
   letter-spacing: 0.3px;
   position: relative;
+  min-width: 220px;
 }
 
 .audio-toggle-btn:hover {
@@ -375,6 +378,7 @@
 }
 
 .mode-icon {
+  display: none;
   font-size: 20px;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
 }
@@ -385,26 +389,29 @@
 }
 
 .mode-hint {
-  font-size: 11px;
+  font-size: 9px;
   opacity: 0.7;
   background: rgba(255, 255, 255, 0.15);
-  padding: 3px 8px;
-  border-radius: 4px;
-  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.3px;
   font-weight: 600;
+  position: absolute;
+  top: 4px;
+  right: 4px;
 }
 
 #translation-status-text {
-  margin: 0 0 18px 0;
+  margin: 0 0 6px 0;
   color: var(--tb-text-primary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   text-align: center;
   letter-spacing: 0.2px;
 }
 
 .progress-container {
-  margin-bottom: 18px;
+  margin-bottom: 8px;
 }
 
 .progress-text {
@@ -412,7 +419,7 @@
   font-weight: 700;
   color: var(--tb-accent);
   text-align: center;
-  margin-top: 10px;
+  margin-top: 6px;
   letter-spacing: 0.5px;
   text-transform: uppercase;
 }
@@ -420,19 +427,19 @@
 .playback-controls {
   display: flex;
   justify-content: center;
-  gap: 14px;
+  gap: 12px;
 }
 
 .control-btn {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 28px;
+  gap: 8px;
+  padding: 10px 20px;
   background: var(--tb-gradient);
   color: white;
   border: 1px solid rgba(0, 212, 255, 0.3);
   border-radius: var(--tb-radius-md);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
   transition: var(--tb-transition);
