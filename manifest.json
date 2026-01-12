@@ -6,11 +6,10 @@
   "permissions": [
     "storage",
     "tabs",
-    "scripting"
-  ],
-  "optional_host_permissions": [
-    "https://*/*",
-    "http://*/*"
+    "scripting",
+    "tabCapture",
+    "desktopCapture",
+    "offscreen"
   ],
   "host_permissions": [
     "https://*/*",
@@ -27,7 +26,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/content-transcript-only.js"],
+      "js": ["content/audio-capture.js", "content/tab-audio-capture.js", "content/content-autoplay.js"],
       "css": ["content/content-startup.css"],
       "run_at": "document_end"
     }

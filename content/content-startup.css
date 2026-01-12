@@ -104,10 +104,10 @@
 /* ========== Main Panel ========== */
 #talkbridge-unified-panel {
   position: fixed;
-  bottom: 110px;
+  bottom: 90px;
   right: 28px;
-  width: 460px;
-  height: 720px;
+  width: 420px;
+  height: 650px;
   background: var(--tb-surface);
   border-radius: var(--tb-radius-xl);
   box-shadow: var(--tb-shadow-lg);
@@ -126,6 +126,7 @@
   opacity: 0;
   transform: translateY(30px) scale(0.95);
   pointer-events: none;
+  display: none;
 }
 
 /* ========== Header ========== */
@@ -326,6 +327,71 @@
   border-top: 1px solid var(--tb-border);
   z-index: 10;
   box-shadow: 0 -6px 20px rgba(10, 37, 64, 0.04);
+}
+
+/* Audio Mode Toggle */
+.audio-mode-toggle {
+  margin-bottom: 18px;
+  display: flex;
+  justify-content: center;
+}
+
+.audio-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: var(--tb-gradient);
+  color: white;
+  border: 2px solid rgba(0, 212, 255, 0.3);
+  border-radius: var(--tb-radius-md);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--tb-transition);
+  box-shadow: var(--tb-shadow-sm);
+  letter-spacing: 0.3px;
+  position: relative;
+}
+
+.audio-toggle-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--tb-shadow-md), var(--tb-shadow-accent);
+  border-color: var(--tb-accent);
+}
+
+.audio-toggle-btn:active {
+  transform: translateY(0);
+}
+
+.audio-toggle-btn.original-mode {
+  background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.audio-toggle-btn.original-mode:hover {
+  box-shadow: var(--tb-shadow-md), 0 8px 24px rgba(16, 185, 129, 0.3);
+  border-color: #10B981;
+}
+
+.mode-icon {
+  font-size: 20px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
+}
+
+.mode-text {
+  flex: 1;
+  text-align: left;
+}
+
+.mode-hint {
+  font-size: 11px;
+  opacity: 0.7;
+  background: rgba(255, 255, 255, 0.15);
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  font-weight: 600;
 }
 
 #translation-status-text {

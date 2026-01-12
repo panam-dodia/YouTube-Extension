@@ -6,7 +6,6 @@ const API_URL = 'https://talkbridge-backend-1053199504066.us-central1.run.app';
 
 // State
 let settings = {
-  geminiApiKey: '',
   targetLanguage: '',
   enableTranslation: false,
   sourceLanguage: 'en'
@@ -17,19 +16,19 @@ let translations = new Map();
 let audioCache = new Map();
 let unifiedPanel = null;
 let detectedGender = 'male';
+let isTranslationActive = false; // Prevent multiple simultaneous translations
 
 // Initialize extension
 async function init() {
   const stored = await chrome.storage.sync.get({
-    geminiApiKey: '',
     targetLanguage: '',
     enableTranslation: false,
     sourceLanguage: 'en'
   });
   settings = stored;
 
-  // Detect video pages
-  const detectAndLoadVideo = () => {
+  // Detect video pages and auto-start translation
+  const detectAndLoadVideo = async () => {
     const video = document.querySelector('video');
 
     if (video && isYouTubePage()) {
@@ -37,6 +36,15 @@ async function init() {
       if (videoId && videoId !== currentVideoId) {
         currentVideoId = videoId;
         console.log('📹 New YouTube video detected:', videoId);
+
+        // Auto-start translation if enabled
+        if (settings.enableTranslation && !isTranslationActive) {
+          console.log('🚀 Auto-starting translation...');
+          // Small delay to ensure video is ready
+          setTimeout(() => {
+            handleStartTranslation({ sourceLanguage: settings.sourceLanguage });
+          }, 1000);
+        }
       }
     }
   };
@@ -142,14 +150,14 @@ async function translateTranscript(transcript) {
 
     const fullText = transcript.map(seg => seg.text).join(' ');
 
-    const response = await fetch(`${API_URL}/api/translation/translate-text`, {
+    const response = await fetch(`${API_URL}/api/translation/translate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text: fullText,
         targetLanguage: settings.targetLanguage,
-        sourceLanguage: settings.sourceLanguage,
-        apiKey: settings.geminiApiKey
+        sourceLanguage: settings.sourceLanguage
+        // API key is stored on backend, not sent from client
       })
     });
 
@@ -316,6 +324,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Handle start translation
 async function handleStartTranslation(message) {
   try {
+    // Prevent multiple simultaneous translations
+    if (isTranslationActive) {
+      console.log('⚠️ Translation already in progress, ignoring request');
+      return { success: false, error: 'Translation already active' };
+    }
+
+    isTranslationActive = true;
     console.log('▶️ Starting transcript-based translation...');
 
     // Update settings
@@ -347,8 +362,8 @@ async function handleStartTranslation(message) {
     // Display original transcript
     displayTranscript(transcript, null);
 
-    // Translate if API key is available
-    if (settings.geminiApiKey && settings.targetLanguage) {
+    // Translate if target language is selected
+    if (settings.targetLanguage) {
       updateStatus('Translating...', 'info');
       const translatedText = await translateTranscript(transcript);
       updateStatus('Translation complete!', 'success');
@@ -356,7 +371,7 @@ async function handleStartTranslation(message) {
       // For now, show full translation (we can split it later)
       displayTranscript(transcript, translatedText);
     } else {
-      updateStatus('No API key - showing original only', 'info');
+      updateStatus('No target language selected - showing original only', 'info');
     }
 
     return { success: true };
@@ -365,6 +380,8 @@ async function handleStartTranslation(message) {
     console.error('❌ Start translation failed:', error);
     updateStatus(`Error: ${error.message}`, 'error');
     return { success: false, error: error.message };
+  } finally {
+    isTranslationActive = false;
   }
 }
 
@@ -378,6 +395,7 @@ function handleStopTranslation() {
 
   transcript = null;
   translations.clear();
+  isTranslationActive = false;
 }
 
 // Initialize when script loads

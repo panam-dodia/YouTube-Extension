@@ -34,6 +34,7 @@ let transcriptionMode = 'none'; // 'transcript', 'live', or 'none'
 let liveTranscriptBuffer = []; // Buffer for live transcriptions
 let detectedSourceLanguage = null; // Auto-detected source language
 let isTabCaptureActive = false; // Track if tab capture is already running
+let audioMode = 'translated'; // 'translated' or 'original'
 
 // Web Audio API variables for createMediaElementSource approach
 let audioContext = null;
@@ -858,16 +859,16 @@ function getYouTubePlayer() {
 function createUnifiedPanel() {
   if (unifiedPanel) return;
 
-  // Remove any existing FAB or panel (in case of duplicate script load)
-  const existingFab = document.getElementById('talkbridge-fab');
+  // Remove any existing panel and FAB (in case of duplicate script load)
   const existingPanel = document.getElementById('talkbridge-unified-panel');
-  if (existingFab) existingFab.remove();
+  const existingFab = document.getElementById('talkbridge-fab');
   if (existingPanel) existingPanel.remove();
+  if (existingFab) existingFab.remove();
 
   const hasTranslation = settings.enableTranslation && settings.targetLanguage;
   const hasQA = settings.enableQA; // API key is on backend, not required from user
 
-  // Create FAB
+  // Create floating button (shows when panel is hidden)
   const fab = document.createElement('div');
   fab.id = 'talkbridge-fab';
   fab.innerHTML = `
@@ -876,10 +877,10 @@ function createUnifiedPanel() {
   `;
   document.body.appendChild(fab);
 
-  // Create main panel
+  // Create main panel (hidden by default, user clicks FAB or extension icon to show)
   unifiedPanel = document.createElement('div');
   unifiedPanel.id = 'talkbridge-unified-panel';
-  unifiedPanel.className = 'hidden';
+  unifiedPanel.className = 'hidden'; // Hidden by default
 
   unifiedPanel.innerHTML = `
     <div class="panel-header">
@@ -931,7 +932,14 @@ function createUnifiedPanel() {
         <div class="tab-content active" id="translation-tab">
           <div class="translation-list" id="translation-list"></div>
           <div class="translation-controls">
-            <p id="translation-status-text">Translating...</p>
+            <div class="audio-mode-toggle">
+              <button id="audio-mode-btn" class="audio-toggle-btn" title="Press Alt+A to toggle">
+                <span class="mode-icon">🔊</span>
+                <span class="mode-text">Translated Audio</span>
+                <span class="mode-hint">Alt+A</span>
+              </button>
+            </div>
+            <p id="translation-status-text">Select a video to get started</p>
             <div class="progress-container" id="progress-container" style="display: none;">
               <div class="progress-bar">
                 <div class="progress-fill" id="progress-fill"></div>
@@ -951,9 +959,6 @@ function createUnifiedPanel() {
                 </svg>
                 <span>Pause</span>
               </button>
-            </div>
-            <div class="instruction-text" style="padding: 10px; text-align: center; color: #888; font-size: 12px;">
-              Click the TalkBridge extension icon to start/stop translation
             </div>
           </div>
         </div>
@@ -1001,22 +1006,25 @@ function createUnifiedPanel() {
 
   // Event listeners
   fab.addEventListener('click', () => {
-    unifiedPanel.classList.toggle('hidden');
-    fab.classList.toggle('active');
+    unifiedPanel.classList.remove('hidden');
+    fab.style.display = 'none';
   });
 
   document.getElementById('panel-minimize')?.addEventListener('click', () => {
     unifiedPanel.classList.add('hidden');
-    fab.classList.remove('active');
+    fab.style.display = 'flex';
   });
 
   document.getElementById('panel-close').addEventListener('click', () => {
     unifiedPanel.classList.add('hidden');
-    fab.classList.remove('active');
+    fab.style.display = 'flex';
   });
 
   // Translation control is now handled by the extension popup
   // No button in floating panel - users click extension icon to start/stop
+
+  // Audio mode toggle
+  document.getElementById('audio-mode-btn')?.addEventListener('click', toggleAudioMode);
 
   // Playback controls
   document.getElementById('play-btn')?.addEventListener('click', resumePlayback);
@@ -1048,6 +1056,52 @@ function switchTab(tabName) {
   document.querySelectorAll('.tab-content').forEach(content => {
     content.classList.toggle('active', content.id === `${tabName}-tab`);
   });
+}
+
+// Toggle audio mode between translated and original
+function toggleAudioMode() {
+  const btn = document.getElementById('audio-mode-btn');
+  const icon = btn?.querySelector('.mode-icon');
+  const text = btn?.querySelector('.mode-text');
+
+  if (audioMode === 'translated') {
+    // Switch to original audio
+    audioMode = 'original';
+    if (icon) icon.textContent = '🎧';
+    if (text) text.textContent = 'Original Audio';
+    btn?.classList.add('original-mode');
+
+    // Unmute video, pause translated audio
+    if (youtubeVideo) {
+      youtubeVideo.muted = false;
+      youtubeVideo.volume = originalVideoVolume || 1.0;
+    }
+    if (currentAudio && !currentAudio.paused) {
+      currentAudio.pause();
+    }
+
+    console.log('🎧 Switched to Original Audio mode');
+    showNotification('🎧 Playing original audio with translated subtitles', 'info');
+
+  } else {
+    // Switch to translated audio
+    audioMode = 'translated';
+    if (icon) icon.textContent = '🔊';
+    if (text) text.textContent = 'Translated Audio';
+    btn?.classList.remove('original-mode');
+
+    // Mute video, resume translated audio
+    if (youtubeVideo) {
+      originalVideoVolume = youtubeVideo.volume;
+      youtubeVideo.muted = true;
+    }
+    if (currentAudio && currentAudio.paused && isPlaying) {
+      currentAudio.play();
+    }
+
+    console.log('🔊 Switched to Translated Audio mode');
+    showNotification('🔊 Playing translated audio', 'info');
+  }
 }
 
 // Group transcript segments into complete sentences
@@ -1102,18 +1156,16 @@ function groupIntoSentences(transcript) {
 
   console.log(`📝 Grouped ${transcript.length} segments into ${sentences.length} sentences`);
 
-  // Verify no duplicates by checking both timestamps and text similarity
+  // Aggressive deduplication - check full text similarity
   const uniqueSentences = [];
-  const seenStarts = new Set();
   const seenTexts = new Set();
 
   for (const sentence of sentences) {
-    const startKey = Math.floor(sentence.start);
-    const textKey = sentence.text.substring(0, 50).toLowerCase(); // Use first 50 chars for similarity check
+    // Normalize text: remove spaces, punctuation, convert to lowercase for comparison
+    const normalizedText = sentence.text.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, '');
 
-    if (!seenStarts.has(startKey) && !seenTexts.has(textKey)) {
-      seenStarts.add(startKey);
-      seenTexts.add(textKey);
+    if (!seenTexts.has(normalizedText)) {
+      seenTexts.add(normalizedText);
       uniqueSentences.push(sentence);
     } else {
       console.warn(`⚠️ Skipping duplicate sentence at ${sentence.start}s: "${sentence.text.substring(0, 40)}..."`);
@@ -1336,14 +1388,21 @@ async function autoStartPlayback() {
   }
 
   if (youtubeVideo) {
-    console.log(`🔇 Muting YouTube video`);
-    youtubeVideo.muted = true;
+    // Mute/unmute based on audio mode
+    if (audioMode === 'translated') {
+      console.log(`🔇 Muting YouTube video (translated mode)`);
+      youtubeVideo.muted = true;
+    } else {
+      console.log(`🔊 Unmuting YouTube video (original mode)`);
+      youtubeVideo.muted = false;
+      youtubeVideo.volume = originalVideoVolume || 1.0;
+    }
     youtubeVideo.play();
   } else {
     console.warn('⚠️ YouTube video element not found, trying to get it again...');
     getYouTubePlayer();
     if (youtubeVideo) {
-      youtubeVideo.muted = true;
+      youtubeVideo.muted = (audioMode === 'translated');
       youtubeVideo.play();
     }
   }
@@ -1401,7 +1460,10 @@ async function playNextSegment(audioOffset = 0) {
     console.log(`⏭️ Starting audio from ${audioOffset.toFixed(1)}s offset`);
   }
 
-  currentAudio.play();
+  // Only play translated audio if in translated mode
+  if (audioMode === 'translated') {
+    currentAudio.play();
+  }
 
   // Wait for audio to finish
   await new Promise((resolve) => {
@@ -2259,11 +2321,11 @@ function handleVideoChange() {
       audioCaptureManager = null;
     }
 
-    // Remove old panel
-    const existingFab = document.getElementById('talkbridge-fab');
+    // Remove old panel and FAB
     const existingPanel = document.getElementById('talkbridge-unified-panel');
-    if (existingFab) existingFab.remove();
+    const existingFab = document.getElementById('talkbridge-fab');
     if (existingPanel) existingPanel.remove();
+    if (existingFab) existingFab.remove();
     unifiedPanel = null;
 
     // Reset state
@@ -2293,5 +2355,13 @@ setInterval(handleVideoChange, 1000);
 
 // Also listen for YouTube's navigation events (faster detection)
 document.addEventListener('yt-navigate-finish', handleVideoChange);
+
+// Keyboard shortcut: Alt+A to toggle audio mode
+document.addEventListener('keydown', (e) => {
+  if (e.altKey && e.key.toLowerCase() === 'a') {
+    e.preventDefault();
+    toggleAudioMode();
+  }
+});
 
 init();
