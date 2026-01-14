@@ -163,6 +163,33 @@ document.addEventListener('DOMContentLoaded', async () => {
   targetLanguage.value = settings.targetLanguage;
   enableQA.checked = settings.enableQA;
 
+  // Track if settings have been saved
+  let settingsSaved = true;
+
+  // Function to mark settings as unsaved (changed)
+  function markSettingsChanged() {
+    if (settingsSaved) {
+      settingsSaved = false;
+      saveButton.textContent = 'Save Settings';
+      saveButton.style.background = '';
+    }
+  }
+
+  // Function to mark settings as saved
+  function markSettingsSaved() {
+    settingsSaved = true;
+    saveButton.textContent = 'Saved ✓';
+    saveButton.style.background = '#4caf50';
+  }
+
+  // Listen for changes to settings
+  enableTranslation.addEventListener('change', markSettingsChanged);
+  targetLanguage.addEventListener('change', markSettingsChanged);
+  enableQA.addEventListener('change', markSettingsChanged);
+
+  // Initially mark as saved since we just loaded the settings
+  markSettingsSaved();
+
   // Save settings
   saveButton.addEventListener('click', async () => {
     console.log('💾 Save button clicked');
@@ -201,13 +228,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       });
 
-      // Visual feedback
-      saveButton.textContent = 'Saved!';
-      saveButton.style.background = '#4caf50';
-      setTimeout(() => {
-        saveButton.textContent = 'Save Settings';
-        saveButton.style.background = '';
-      }, 1500);
+      // Mark as saved
+      markSettingsSaved();
     } catch (error) {
       console.error('❌ Failed to save settings:', error);
       alert('Failed to save settings. Please try again.');

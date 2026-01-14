@@ -13,6 +13,7 @@ desktop.ini
 # Temporary files
 *.log
 *.tmp
+tmpclaude-*
 
 # Distribution
 dist/

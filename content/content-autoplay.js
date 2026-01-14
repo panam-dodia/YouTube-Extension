@@ -5,6 +5,25 @@ const API_URL = 'https://talkbridge-backend-1053199504066.us-central1.run.app';
 const BACKEND_URL = API_URL; // Backend URL for microphone transcription
 const BUFFER_SIZE = 3; // Number of segments to buffer before auto-play
 
+// Helper function to retry fetch with exponential backoff
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      return response;
+    } catch (error) {
+      if (attempt === maxRetries - 1) {
+        // Last attempt failed, throw the error
+        throw error;
+      }
+      // Wait before retrying (exponential backoff: 1s, 2s, 4s)
+      const delay = Math.pow(2, attempt) * 1000;
+      console.log(`⚠️ Fetch failed, retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
 // State
 let settings = {
   geminiApiKey: '',
@@ -131,6 +150,87 @@ function getVideoId() {
   return urlParams.get('v');
 }
 
+// Check if an ad is currently playing
+function isAdPlaying() {
+  // Method 1: Check for ad-showing class on video container
+  const videoContainer = document.querySelector('.html5-video-player');
+  if (videoContainer && videoContainer.classList.contains('ad-showing')) {
+    return true;
+  }
+
+  // Method 2: Check for ad module
+  const adModule = document.querySelector('.video-ads.ytp-ad-module');
+  if (adModule && adModule.children.length > 0) {
+    return true;
+  }
+
+  // Method 3: Check for ad overlay
+  const adOverlay = document.querySelector('.ytp-ad-player-overlay');
+  if (adOverlay && adOverlay.offsetParent !== null) {
+    return true;
+  }
+
+  // Method 4: Check for skip ad button (most reliable)
+  const skipButton = document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button');
+  if (skipButton && skipButton.offsetParent !== null) {
+    return true;
+  }
+
+  return false;
+}
+
+// Monitor for ads continuously
+let adCheckInterval = null;
+function startAdMonitoring() {
+  if (adCheckInterval) return; // Already monitoring
+
+  adCheckInterval = setInterval(() => {
+    const adIsPlaying = isAdPlaying();
+
+    if (adIsPlaying && youtubeVideo && !youtubeVideo.paused) {
+      // Ad is playing - stop tracking and mute translation
+      chrome.runtime.sendMessage({ action: 'stopUsageTracking' });
+
+      // Stop audio playback if playing
+      if (currentPlayingAudio) {
+        currentPlayingAudio.pause();
+        currentPlayingAudio = null;
+        isPlayingAudio = false;
+      }
+
+      console.log('📺 Ad detected - paused translation and usage tracking');
+    } else if (!adIsPlaying && youtubeVideo && !youtubeVideo.paused) {
+      // No ad and video is playing - resume tracking
+      chrome.runtime.sendMessage({ action: 'startUsageTracking' });
+      console.log('▶️ Ad ended - resumed translation and usage tracking');
+    }
+  }, 500); // Check every 500ms for ad changes
+}
+
+function stopAdMonitoring() {
+  if (adCheckInterval) {
+    clearInterval(adCheckInterval);
+    adCheckInterval = null;
+  }
+}
+
+// Video play/pause handlers for usage tracking
+function handleVideoPause() {
+  chrome.runtime.sendMessage({ action: 'stopUsageTracking' });
+  console.log('⏱️ Paused usage tracking - video paused');
+}
+
+function handleVideoPlay() {
+  // Check if ad is playing before starting tracking
+  if (isAdPlaying()) {
+    console.log('⏱️ Ad detected - not starting usage tracking yet');
+    return;
+  }
+
+  chrome.runtime.sendMessage({ action: 'startUsageTracking' });
+  console.log('⏱️ Resumed usage tracking - video playing');
+}
+
 async function loadVideoFeatures() {
   try {
     console.log('🎯 Loading video features...');
@@ -154,9 +254,27 @@ async function loadVideoFeatures() {
         hasTranscript = true;
         transcriptionMode = 'transcript';
 
-        // Start usage tracking for transcript-based translation
-        chrome.runtime.sendMessage({ action: 'startUsageTracking' });
-        console.log('⏱️ Started usage tracking for transcript-based translation');
+        // Start usage tracking for transcript-based translation (if not an ad)
+        if (!isAdPlaying()) {
+          chrome.runtime.sendMessage({ action: 'startUsageTracking' });
+          console.log('⏱️ Started usage tracking for transcript-based translation');
+        } else {
+          console.log('📺 Ad detected on page load - usage tracking will start after ad');
+        }
+
+        // Start ad monitoring to pause/resume during ads
+        startAdMonitoring();
+
+        // Add video play/pause listeners to control usage tracking
+        if (youtubeVideo) {
+          // Remove old listeners to avoid duplicates
+          youtubeVideo.removeEventListener('pause', handleVideoPause);
+          youtubeVideo.removeEventListener('play', handleVideoPlay);
+
+          // Add new listeners
+          youtubeVideo.addEventListener('pause', handleVideoPause);
+          youtubeVideo.addEventListener('play', handleVideoPlay);
+        }
 
         // Detect gender for better voice matching
         if (settings.enableTranslation && transcript.length > 0) {
@@ -1078,6 +1196,21 @@ function createUnifiedPanel() {
   document.getElementById('play-btn')?.addEventListener('click', resumePlayback);
   document.getElementById('pause-btn')?.addEventListener('click', pausePlayback);
 
+  // Set initial play/pause button state based on video state
+  const playBtn = document.getElementById('play-btn');
+  const pauseBtn = document.getElementById('pause-btn');
+  if (youtubeVideo) {
+    if (youtubeVideo.paused) {
+      // Video is paused - show play button
+      if (playBtn) playBtn.style.display = 'flex';
+      if (pauseBtn) pauseBtn.style.display = 'none';
+    } else {
+      // Video is playing - show pause button
+      if (playBtn) playBtn.style.display = 'none';
+      if (pauseBtn) pauseBtn.style.display = 'flex';
+    }
+  }
+
   // Tab switching
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -1297,7 +1430,7 @@ async function startProgressiveTranslation() {
 
     try {
       // Translate complete sentence
-      const response = await fetch(`${API_URL}/api/translation/translate`, {
+      const response = await fetchWithRetry(`${API_URL}/api/translation/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1337,8 +1470,12 @@ async function startProgressiveTranslation() {
         if (statusText) {
           statusText.textContent = `⚠️ API quota exceeded. Translation paused.`;
         }
-        showNotification('Gemini API quota exceeded.', 'error');
+        showNotification('API quota exceeded. Please try again later.', 'error');
         break;
+      } else if (error.message && error.message.includes('Failed to fetch')) {
+        console.error(`⚠️ Network error on segment ${i}, continuing with next segment...`);
+        // Continue to next segment instead of stopping completely
+        continue;
       }
     }
   }
@@ -1770,7 +1907,7 @@ async function bufferAroundPosition(targetIndex, bufferSize = 5) {
     try {
       // Translate if not already translated
       if (!translations.has(i)) {
-        const response = await fetch(`${API_URL}/api/translation/translate`, {
+        const response = await fetchWithRetry(`${API_URL}/api/translation/translate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2372,11 +2509,28 @@ function stopMicrophoneCapture() {
 // Message listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'UPDATE_SETTINGS') {
+    const oldLanguage = settings.targetLanguage;
     settings = message.settings;
     console.log('Settings updated:', settings);
 
     if (currentVideoId === getVideoId()) {
-      if ((settings.enableQA && !unifiedPanel && settings.geminiApiKey) ||
+      // If language changed and translation is enabled, re-translate
+      if (settings.enableTranslation && settings.targetLanguage &&
+          oldLanguage !== settings.targetLanguage && unifiedPanel && transcript) {
+        console.log(`🌍 Language changed from ${oldLanguage} to ${settings.targetLanguage} - re-translating...`);
+
+        // Clear existing translations and audio cache
+        translations.clear();
+        audioCache.clear();
+
+        // Re-detect gender for new language
+        detectSpeakerGender().then(() => {
+          // Re-translate all sentences in the new language
+          translateAllSentences();
+        });
+      }
+      // If panel doesn't exist yet, load features
+      else if ((settings.enableQA && !unifiedPanel && settings.geminiApiKey) ||
           (settings.enableTranslation && !unifiedPanel && settings.targetLanguage)) {
         loadVideoFeatures();
       }
@@ -2435,14 +2589,42 @@ let lastVideoId = null;
 
 function handleVideoChange() {
   const videoId = getVideoId();
+
+  // If we left the watch page entirely, clean up everything
+  if (!window.location.pathname.includes('/watch')) {
+    if (lastVideoId) {
+      console.log('📴 Left watch page - cleaning up');
+      chrome.runtime.sendMessage({ action: 'stopUsageTracking' });
+      stopAdMonitoring();
+
+      // Stop audio playback
+      if (currentPlayingAudio) {
+        currentPlayingAudio.pause();
+        currentPlayingAudio = null;
+        isPlayingAudio = false;
+      }
+
+      // Stop audio capture
+      if (audioCaptureManager) {
+        audioCaptureManager.stopCapture();
+        audioCaptureManager = null;
+      }
+
+      lastVideoId = null;
+      currentVideoId = null;
+    }
+    return;
+  }
+
   if (videoId && videoId !== lastVideoId && !loadingInProgress) {
     lastVideoId = videoId;
     currentVideoId = videoId;
     console.log('Video changed:', videoId);
 
-    // Stop usage tracking when video changes
+    // Stop usage tracking and ad monitoring when video changes
     chrome.runtime.sendMessage({ action: 'stopUsageTracking' });
-    console.log('⏱️ Stopped usage tracking - video changed');
+    stopAdMonitoring();
+    console.log('⏱️ Stopped usage tracking and ad monitoring - video changed');
 
     // Stop audio capture if active
     if (audioCaptureManager) {
