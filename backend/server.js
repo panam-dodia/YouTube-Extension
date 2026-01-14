@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import translationRoutes from './routes/translation.routes.js';
 import waitlistRoutes from './routes/waitlist.routes.js';
+import trialRoutes from './routes/trial.routes.js';
 
 dotenv.config();
 
@@ -26,6 +27,7 @@ app.get('/health', (req, res) => {
 // Routes
 app.use('/api/translation', translationRoutes);
 app.use('/api/waitlist', waitlistRoutes);
+app.use('/api/trial', trialRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

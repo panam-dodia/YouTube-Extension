@@ -18,11 +18,47 @@
       <span id="status-text">No video detected</span>
     </div>
 
+    <!-- Email Registration for Trial (shown on first launch) -->
+    <div id="email-registration-section" class="email-registration" style="display: none;">
+      <h2>🎉 Start Your Free Trial</h2>
+      <p>Get 7 days of free access to TalkBridge!</p>
+      <div class="form-group">
+        <input type="email" id="trial-email" placeholder="Enter your email to start" required>
+        <button id="start-trial-btn" class="btn btn-primary">Start 7-Day Free Trial</button>
+      </div>
+      <p class="privacy-note">We'll never share your email. No credit card required.</p>
+    </div>
+
+    <!-- Language Selection (shown if email registered but language not selected) -->
+    <div id="language-selection-section" class="email-registration" style="display: none;">
+      <h2>🌍 Choose Your Language</h2>
+      <p>Select the language you want videos translated to:</p>
+      <div class="form-group">
+        <select id="language-select" style="width: 100%; padding: 12px; border: 2px solid #667eea; border-radius: 8px; font-size: 14px; margin-bottom: 15px;">
+          <option value="">Select your language...</option>
+          <option value="Spanish">Spanish</option>
+          <option value="French">French</option>
+          <option value="German">German</option>
+          <option value="Italian">Italian</option>
+          <option value="Portuguese">Portuguese</option>
+          <option value="Russian">Russian</option>
+          <option value="Japanese">Japanese</option>
+          <option value="Korean">Korean</option>
+          <option value="Chinese">Chinese</option>
+          <option value="Hindi">Hindi</option>
+          <option value="Arabic">Arabic</option>
+          <option value="English">English</option>
+        </select>
+        <button id="save-language-btn" class="btn btn-primary">Continue</button>
+      </div>
+      <p class="privacy-note">Don't worry, the source language will be auto-detected!</p>
+    </div>
+
     <!-- Trial Status -->
     <div id="trial-status" class="trial-banner">
       <div class="trial-info">
         <span id="trial-days">🎉 Free Trial: 7 days remaining</span>
-        <span id="usage-info">📊 Today: 0 / 30 minutes used</span>
+        <span id="usage-info">📊 Today: 0 / 15 minutes used</span>
       </div>
     </div>
 

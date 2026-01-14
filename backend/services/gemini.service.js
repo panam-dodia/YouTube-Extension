@@ -76,22 +76,43 @@ Answer:`;
    */
   async detectVoiceGender(transcriptSample) {
     try {
-      const prompt = `Analyze this video transcript and determine the speaker's gender ONLY if there are EXPLICIT indicators.
+      const prompt = `Analyze this video transcript and determine the most likely speaker's gender based on multiple factors.
 
 Transcript sample:
 ${transcriptSample}
 
-Look for EXPLICIT indicators ONLY:
-1. Direct self-references: "I am a man/woman", "as a male/female", etc.
-2. Clear pronoun usage: "he/him" or "she/her" when referring to the speaker
-3. Gendered titles: Mr., Mrs., Ms., Sir, Madam, etc.
+Consider these indicators (in order of importance):
+
+1. EXPLICIT INDICATORS (highest confidence):
+   - Direct self-references: "I am a man/woman", "as a male/female", "I'm a guy/girl"
+   - Gendered titles: Mr., Mrs., Ms., Sir, Madam, gentleman, lady
+   - Gendered roles/positions: "actress", "waitress", "businessman", etc.
+   - Self-descriptive pronouns: "he/him" or "she/her" when referring to themselves
+
+2. CONTEXTUAL INDICATORS (medium confidence):
+   - Topics typically associated with gender (e.g., pregnancy, military service, sports leagues)
+   - Personal experiences shared (e.g., "when I was pregnant", "my husband/wife")
+   - Gendered product reviews (makeup, shaving, etc.)
+   - Gendered professions or roles mentioned as their own
+
+3. LINGUISTIC PATTERNS (lower confidence, use as tiebreaker):
+   - Communication style and word choices
+   - Use of intensifiers, hedging, or emotional language
+   - Topic of discussion and presentation style
+
+DECISION RULES:
+- If explicit indicators are present → use those (highest confidence)
+- If strong contextual clues exist → use those (medium confidence)
+- If only linguistic patterns → make best inference (lower confidence)
+- If truly ambiguous or unclear → default to "male"
 
 IMPORTANT:
-- If there are NO explicit gender indicators, respond with "male" (default)
-- Do NOT guess based on topic, interests, or speech patterns
-- ONLY detect gender if it's explicitly stated
+- Consider ALL available evidence, not just one type
+- Even subtle contextual clues can be valuable
+- The goal is accuracy, not certainty - make the best inference possible
+- Consider that the speaker might be talking ABOUT themselves, not just using neutral language
 
-Respond with ONLY ONE WORD: either "male" or "female"
+Analyze the transcript and respond with ONLY ONE WORD: either "male" or "female"
 
 Answer:`;
 
@@ -99,7 +120,7 @@ Answer:`;
       const response = await result.response;
       const gender = response.text().trim().toLowerCase();
 
-      if (gender.includes('female')) {
+      if (gender.includes('female') || gender.includes('woman')) {
         return 'female';
       } else {
         return 'male';

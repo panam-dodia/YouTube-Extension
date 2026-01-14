@@ -277,3 +277,29 @@ body {
   color: #667eea;
   font-size: 15px;
 }
+
+/* Email Registration Section */
+.email-registration {
+  padding: 30px 20px;
+  text-align: center;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%);
+}
+
+.email-registration h2 {
+  font-size: 22px;
+  margin-bottom: 10px;
+  color: #667eea;
+}
+
+.email-registration p {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 20px;
+}
+
+.privacy-note {
+  font-size: 11px;
+  color: #999;
+  margin-top: 10px;
+  font-style: italic;
+}

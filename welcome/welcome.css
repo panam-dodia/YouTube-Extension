@@ -491,6 +491,186 @@ body::before {
   letter-spacing: 0.5px;
 }
 
+/* Setup Form Section */
+.setup-section {
+  margin-bottom: 110px;
+  animation: fadeInUp 0.8s ease-out 0.4s both;
+  max-width: 650px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.setup-section h3 {
+  font-size: 46px;
+  font-weight: 900;
+  color: var(--tb-primary);
+  text-align: center;
+  margin-bottom: 20px;
+  letter-spacing: -1px;
+}
+
+.setup-intro {
+  text-align: center;
+  font-size: 18px;
+  color: var(--tb-text-secondary);
+  margin-bottom: 50px;
+  font-weight: 500;
+}
+
+.setup-form {
+  background: linear-gradient(135deg, var(--tb-surface) 0%, var(--tb-surface-elevated) 100%);
+  border-radius: var(--tb-radius-xl);
+  padding: 50px 45px;
+  box-shadow: var(--tb-shadow-md);
+  border: 2px solid var(--tb-border);
+}
+
+.form-group {
+  margin-bottom: 32px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--tb-primary);
+  margin-bottom: 12px;
+  letter-spacing: -0.3px;
+}
+
+.form-group input[type="email"],
+.form-group select {
+  width: 100%;
+  padding: 16px 20px;
+  border: 2px solid var(--tb-border);
+  border-radius: var(--tb-radius-md);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--tb-text-primary);
+  background: var(--tb-surface);
+  transition: all 0.3s ease;
+}
+
+.form-group input[type="email"]:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: var(--tb-accent);
+  box-shadow: 0 0 0 4px var(--tb-accent-glow);
+}
+
+.form-group small {
+  display: block;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--tb-text-muted);
+  font-weight: 500;
+}
+
+.setup-form .cta-button {
+  width: 100%;
+  margin-top: 20px;
+  cursor: pointer;
+  border: none;
+}
+
+.setup-form .cta-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+/* Success Section */
+.success-section {
+  margin-bottom: 110px;
+  animation: fadeInUp 0.8s ease-out both;
+  max-width: 750px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.success-content {
+  background: linear-gradient(135deg, rgba(0, 212, 255, 0.08) 0%, rgba(10, 37, 64, 0.05) 100%);
+  border-radius: var(--tb-radius-xl);
+  padding: 70px 50px;
+  text-align: center;
+  border: 3px solid rgba(0, 212, 255, 0.3);
+  box-shadow: 0 10px 40px rgba(0, 212, 255, 0.2);
+}
+
+.success-icon {
+  font-size: 90px;
+  margin-bottom: 30px;
+  animation: successPulse 2s ease-in-out infinite;
+}
+
+@keyframes successPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+.success-content h3 {
+  font-size: 42px;
+  font-weight: 900;
+  color: var(--tb-primary);
+  margin-bottom: 20px;
+  letter-spacing: -1px;
+}
+
+.success-message {
+  font-size: 20px;
+  color: var(--tb-text-secondary);
+  margin-bottom: 50px;
+  line-height: 1.7;
+  font-weight: 500;
+}
+
+.next-steps {
+  background: var(--tb-surface);
+  border-radius: var(--tb-radius-md);
+  padding: 35px 40px;
+  margin-bottom: 35px;
+  border: 2px solid var(--tb-border);
+  box-shadow: var(--tb-shadow-sm);
+}
+
+.next-steps h4 {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--tb-primary);
+  margin-bottom: 22px;
+  letter-spacing: -0.5px;
+}
+
+.next-steps ol {
+  text-align: left;
+  padding-left: 24px;
+  max-width: 450px;
+  margin: 0 auto;
+}
+
+.next-steps li {
+  font-size: 17px;
+  color: var(--tb-text-secondary);
+  margin-bottom: 14px;
+  line-height: 1.7;
+  font-weight: 500;
+}
+
+.trial-info {
+  font-size: 16px;
+  color: var(--tb-text-secondary);
+  font-weight: 600;
+  background: var(--tb-surface);
+  padding: 18px 28px;
+  border-radius: var(--tb-radius-md);
+  border: 2px solid rgba(0, 212, 255, 0.2);
+}
+
+.trial-info strong {
+  color: var(--tb-accent);
+  font-weight: 800;
+}
+
 /* Responsive Design */
 @media (max-width: 768px) {
   .hero {
@@ -543,5 +723,30 @@ body::before {
   .cta-button {
     font-size: 19px;
     padding: 22px 48px;
+  }
+
+  .setup-section h3,
+  .success-content h3 {
+    font-size: 32px;
+  }
+
+  .setup-form {
+    padding: 35px 25px;
+  }
+
+  .success-content {
+    padding: 50px 30px;
+  }
+
+  .success-icon {
+    font-size: 70px;
+  }
+
+  .success-message {
+    font-size: 18px;
+  }
+
+  .next-steps {
+    padding: 25px 20px;
   }
 }

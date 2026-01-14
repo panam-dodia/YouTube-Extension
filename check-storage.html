@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Check Extension Storage</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    pre {
+      background: #f5f5f5;
+      padding: 15px;
+      border-radius: 5px;
+      overflow: auto;
+    }
+    button {
+      background: #6c63ff;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 5px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    button:hover {
+      background: #5548e0;
+    }
+  </style>
+</head>
+<body>
+  <h1>TalkBridge Storage Inspector</h1>
+
+  <button onclick="checkStorage()">Check Storage</button>
+  <button onclick="clearStorage()">Clear All Storage</button>
+
+  <h2>Local Storage:</h2>
+  <pre id="local-storage">Click "Check Storage" to view...</pre>
+
+  <h2>Sync Storage:</h2>
+  <pre id="sync-storage">Click "Check Storage" to view...</pre>
+
+  <script>
+    async function checkStorage() {
+      // Get all local storage
+      const local = await chrome.storage.local.get(null);
+      document.getElementById('local-storage').textContent = JSON.stringify(local, null, 2);
+
+      // Get all sync storage
+      const sync = await chrome.storage.sync.get(null);
+      document.getElementById('sync-storage').textContent = JSON.stringify(sync, null, 2);
+    }
+
+    async function clearStorage() {
+      if (confirm('Are you sure you want to clear ALL storage? This will reset your trial.')) {
+        await chrome.storage.local.clear();
+        await chrome.storage.sync.clear();
+        alert('Storage cleared! Refresh the page to check.');
+        checkStorage();
+      }
+    }
+
+    // Auto-check on load
+    checkStorage();
+  </script>
+</body>
+</html>

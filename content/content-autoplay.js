@@ -154,6 +154,10 @@ async function loadVideoFeatures() {
         hasTranscript = true;
         transcriptionMode = 'transcript';
 
+        // Start usage tracking for transcript-based translation
+        chrome.runtime.sendMessage({ action: 'startUsageTracking' });
+        console.log('⏱️ Started usage tracking for transcript-based translation');
+
         // Detect gender for better voice matching
         if (settings.enableTranslation && transcript.length > 0) {
           await detectSpeakerGender();
@@ -312,6 +316,7 @@ async function detectSpeakerGender() {
   }
 }
 
+
 // Listen for messages from offscreen document and background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('📨 Content script received message:', message.action);
@@ -347,6 +352,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     showNotification('🎙️ Live translation started', 'success');
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle daily limit exceeded
+  if (message.action === 'dailyLimitExceeded') {
+    console.warn('⚠️ Daily limit exceeded:', message.message);
+
+    // Stop any active capture
+    isTabCaptureActive = false;
+
+    // Restore original video volume
+    const video = document.querySelector('video');
+    if (video) {
+      video.volume = originalVideoVolume;
+    }
+
+    // Show notification to user
+    showNotification(`⚠️ ${message.message}`, 'error');
     sendResponse({ success: true });
     return true;
   }
@@ -2415,6 +2439,10 @@ function handleVideoChange() {
     lastVideoId = videoId;
     currentVideoId = videoId;
     console.log('Video changed:', videoId);
+
+    // Stop usage tracking when video changes
+    chrome.runtime.sendMessage({ action: 'stopUsageTracking' });
+    console.log('⏱️ Stopped usage tracking - video changed');
 
     // Stop audio capture if active
     if (audioCaptureManager) {

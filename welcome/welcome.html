@@ -45,48 +45,62 @@
         </div>
       </section>
 
-      <section class="getting-started">
-        <h3>Getting Started</h3>
-        <div class="steps">
-          <div class="step">
-            <div class="step-number">1</div>
-            <div class="step-content">
-              <h4>Open YouTube</h4>
-              <p>Navigate to any YouTube video you want to translate or understand better</p>
-            </div>
+      <!-- Setup Form Section -->
+      <section class="setup-section" id="setup-section">
+        <h3>🎉 Start Your Free 7-Day Trial</h3>
+        <p class="setup-intro">Configure your TalkBridge experience in just a few seconds</p>
+
+        <div class="setup-form">
+          <div class="form-group">
+            <label for="trial-email">Email Address</label>
+            <input type="email" id="trial-email" placeholder="Enter your email" required>
+            <small>We'll never share your email. No credit card required.</small>
           </div>
 
-          <div class="step">
-            <div class="step-number">2</div>
-            <div class="step-content">
-              <h4>Click the TalkBridge Button</h4>
-              <p>Look for the floating TalkBridge button on the bottom right corner of the video page</p>
-            </div>
+          <div class="form-group">
+            <label for="target-language">Translate videos to:</label>
+            <select id="target-language" required>
+              <option value="">Select your language...</option>
+              <option value="Spanish">Spanish</option>
+              <option value="French">French</option>
+              <option value="German">German</option>
+              <option value="Italian">Italian</option>
+              <option value="Portuguese">Portuguese</option>
+              <option value="Russian">Russian</option>
+              <option value="Japanese">Japanese</option>
+              <option value="Korean">Korean</option>
+              <option value="Chinese">Chinese</option>
+              <option value="Hindi">Hindi</option>
+              <option value="Arabic">Arabic</option>
+              <option value="English">English</option>
+            </select>
+            <small>Don't worry, the source language will be auto-detected!</small>
           </div>
 
-          <div class="step">
-            <div class="step-number">3</div>
-            <div class="step-content">
-              <h4>Configure Settings</h4>
-              <p>Click the extension icon in your browser toolbar to select your preferred language and enable features</p>
-            </div>
-          </div>
-
-          <div class="step">
-            <div class="step-number">4</div>
-            <div class="step-content">
-              <h4>Enjoy!</h4>
-              <p>Start watching with real-time translation, ask questions anytime, and explore content in your language</p>
-            </div>
-          </div>
+          <button id="start-trial-btn" class="cta-button">
+            <span>Start Free Trial</span>
+          </button>
         </div>
       </section>
 
-      <section class="cta-section">
-        <h3>Ready to Get Started?</h3>
-        <a href="https://www.youtube.com" class="cta-button" id="goto-youtube">
-          <span>Open YouTube</span>
-        </a>
+      <!-- Success Section (Hidden by default) -->
+      <section class="success-section" id="success-section" style="display: none;">
+        <div class="success-content">
+          <div class="success-icon">✅</div>
+          <h3>All Set! You're Ready to Go</h3>
+          <p class="success-message">Your 7-day free trial has started. Now try TalkBridge on any YouTube video!</p>
+
+          <div class="next-steps">
+            <h4>What's Next?</h4>
+            <ol>
+              <li>Go to any YouTube video</li>
+              <li>Click the extension icon in your toolbar</li>
+              <li>Enable translation and start watching!</li>
+            </ol>
+          </div>
+
+          <p class="trial-info">📊 You have <strong>15 minutes per day</strong> during your trial period.</p>
+        </div>
       </section>
 
       <footer class="footer">

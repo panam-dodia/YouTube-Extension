@@ -1,6 +1,72 @@
 // Background service worker
 console.log('🌉 TalkBridge background service worker started');
 
+// Usage tracking
+let captureStartTime = null;
+let usageIntervalId = null;
+const USAGE_UPDATE_INTERVAL = 1000; // Update every second
+
+// Helper function to get today's date string
+function getTodayDateString() {
+  return new Date().toISOString().split('T')[0];
+}
+
+// Helper function to get current usage for today
+async function getTodayUsage() {
+  const today = getTodayDateString();
+  const data = await chrome.storage.local.get({ dailyUsage: {} });
+  return data.dailyUsage[today] || 0;
+}
+
+// Helper function to update usage
+async function updateUsage(seconds) {
+  const today = getTodayDateString();
+  const data = await chrome.storage.local.get({ dailyUsage: {} });
+  const dailyUsage = data.dailyUsage || {};
+  dailyUsage[today] = (dailyUsage[today] || 0) + seconds;
+  await chrome.storage.local.set({ dailyUsage });
+  console.log(`⏱️ Usage updated: ${dailyUsage[today]}s used today`);
+  return dailyUsage[today];
+}
+
+// Start tracking usage
+function startUsageTracking() {
+  if (usageIntervalId) {
+    console.warn('⚠️ Usage tracking already running');
+    return;
+  }
+
+  captureStartTime = Date.now();
+  console.log('⏱️ Started usage tracking');
+
+  // Update usage every second
+  usageIntervalId = setInterval(async () => {
+    await updateUsage(1);
+  }, USAGE_UPDATE_INTERVAL);
+}
+
+// Stop tracking usage
+async function stopUsageTracking() {
+  if (usageIntervalId) {
+    clearInterval(usageIntervalId);
+    usageIntervalId = null;
+  }
+
+  if (captureStartTime) {
+    // Calculate final session duration
+    const sessionDuration = Math.floor((Date.now() - captureStartTime) / 1000);
+    console.log(`⏱️ Stopped usage tracking. Session duration: ${sessionDuration}s`);
+    captureStartTime = null;
+  }
+}
+
+// Check if user has exceeded daily limit
+async function checkDailyLimit() {
+  const DAILY_LIMIT_SECONDS = 15 * 60; // 15 minutes in seconds
+  const todayUsage = await getTodayUsage();
+  return todayUsage >= DAILY_LIMIT_SECONDS;
+}
+
 // Offscreen document setup
 async function setupOffscreenDocument() {
   const existingContexts = await chrome.runtime.getContexts({
@@ -63,6 +129,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Use chrome.tabCapture.getMediaStreamId() - works in background without user gesture
     (async () => {
       try {
+        // Check daily limit before starting
+        const limitExceeded = await checkDailyLimit();
+        if (limitExceeded) {
+          const todayUsage = await getTodayUsage();
+          const minutesUsed = Math.floor(todayUsage / 60);
+          console.warn(`⚠️ Daily limit exceeded: ${minutesUsed} minutes used`);
+          sendResponse({
+            error: 'Daily limit exceeded',
+            message: `You've used your daily limit of 15 minutes. Try again tomorrow!`,
+            minutesUsed
+          });
+          return;
+        }
+
         await setupOffscreenDocument();
 
         console.log('🎤 Calling chrome.tabCapture.getMediaStreamId()...');
@@ -93,6 +173,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               sendResponse({ error: chrome.runtime.lastError.message });
             } else {
               console.log('✅ Offscreen document started capture');
+
+              // Start usage tracking
+              startUsageTracking();
 
               // Notify content script that capture has started
               chrome.tabs.sendMessage(tabId, {
@@ -132,6 +215,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Create offscreen document if it doesn't exist
     (async () => {
       try {
+        // Check daily limit before starting
+        const limitExceeded = await checkDailyLimit();
+        if (limitExceeded) {
+          const todayUsage = await getTodayUsage();
+          const minutesUsed = Math.floor(todayUsage / 60);
+          console.warn(`⚠️ Daily limit exceeded: ${minutesUsed} minutes used`);
+          sendResponse({
+            error: 'Daily limit exceeded',
+            message: `You've used your daily limit of 15 minutes. Try again tomorrow!`,
+            minutesUsed
+          });
+          return;
+        }
+
         await setupOffscreenDocument();
 
         // Send streamId to offscreen document to start capture
@@ -145,6 +242,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ error: chrome.runtime.lastError.message });
           } else {
             console.log('✅ Offscreen document started capture');
+
+            // Start usage tracking
+            startUsageTracking();
 
             // Notify content script that capture has started
             chrome.tabs.sendMessage(message.tabId, {
@@ -220,27 +320,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'stopTabCapture') {
     console.log('🛑 Stopping tab capture...');
 
-    // Send stop message to offscreen document
-    chrome.runtime.sendMessage({
-      action: 'stopCapture'
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('❌ Failed to stop capture in offscreen:', chrome.runtime.lastError.message);
-        sendResponse({ error: chrome.runtime.lastError.message });
-      } else {
-        console.log('✅ Tab capture stopped successfully');
+    // Stop usage tracking
+    (async () => {
+      await stopUsageTracking();
 
-        // Notify content script
-        const tabId = message.tabId || sender.tab?.id;
-        if (tabId) {
-          chrome.tabs.sendMessage(tabId, {
-            action: 'tabCaptureStopped'
-          });
+      // Send stop message to offscreen document
+      chrome.runtime.sendMessage({
+        action: 'stopCapture'
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('❌ Failed to stop capture in offscreen:', chrome.runtime.lastError.message);
+          sendResponse({ error: chrome.runtime.lastError.message });
+        } else {
+          console.log('✅ Tab capture stopped successfully');
+
+          // Notify content script
+          const tabId = message.tabId || sender.tab?.id;
+          if (tabId) {
+            chrome.tabs.sendMessage(tabId, {
+              action: 'tabCaptureStopped'
+            });
+          }
+
+          sendResponse({ success: true });
         }
-
-        sendResponse({ success: true });
-      }
-    });
+      });
+    })();
 
     return true; // Keep message channel open for async response
   }
@@ -304,6 +409,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
 
+    // Check daily limit before starting
+    (async () => {
+      const limitExceeded = await checkDailyLimit();
+      if (limitExceeded) {
+        const todayUsage = await getTodayUsage();
+        const minutesUsed = Math.floor(todayUsage / 60);
+        console.warn(`⚠️ Daily limit exceeded: ${minutesUsed} minutes used`);
+        chrome.tabs.sendMessage(tabId, {
+          action: 'dailyLimitExceeded',
+          message: `You've used your daily limit of 15 minutes. Try again tomorrow!`,
+          minutesUsed
+        });
+        sendResponse({ error: 'Daily limit exceeded' });
+        return;
+      }
+    })();
+
     // Request desktop/window capture with system audio
     chrome.desktopCapture.chooseDesktopMedia(
       ['screen', 'window', 'audio'],
@@ -338,6 +460,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               });
             } else {
               console.log('✅ Desktop capture started in offscreen document');
+
+              // Start usage tracking
+              startUsageTracking();
 
               // Notify content script
               chrome.tabs.sendMessage(tabId, {
@@ -376,6 +501,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
 
     sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle start usage tracking request (for transcript-based translation)
+  if (message.action === 'startUsageTracking') {
+    startUsageTracking();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle stop usage tracking request
+  if (message.action === 'stopUsageTracking') {
+    stopUsageTracking();
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle get usage request (for popup to display current usage)
+  if (message.action === 'getUsage') {
+    (async () => {
+      const todayUsage = await getTodayUsage();
+      const minutesUsed = Math.floor(todayUsage / 60);
+      const secondsUsed = todayUsage % 60;
+      const isCapturing = captureStartTime !== null;
+
+      sendResponse({
+        success: true,
+        totalSeconds: todayUsage,
+        minutes: minutesUsed,
+        seconds: secondsUsed,
+        isCapturing
+      });
+    })();
     return true;
   }
 
