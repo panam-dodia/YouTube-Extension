@@ -248,28 +248,59 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
 npm start
 ```
 
+## Free Trial System
+
+TalkBridge offers a 7-day free trial for new users with the following terms:
+
+### Trial Duration
+- Trial period: 7 calendar days from registration
+- Daily usage limit: 15 minutes of translation per day
+
+### How Trial Time is Calculated
+- The trial counts elapsed calendar days, NOT usage days
+- The countdown starts from the moment you register and continues regardless of actual usage
+- Example: If you register on January 1st and don't use the extension until January 5th, you will have only 2 days remaining
+
+### Trial Behavior
+| Scenario | Effect on Trial |
+|----------|-----------------|
+| Not using the product | Trial continues counting down |
+| Disabling the extension | Trial continues counting down |
+| Closing the browser | Trial continues counting down |
+| Uninstalling extension | Local data cleared, but backend blocks same email/device from re-registering |
+
+### Trial Data Storage
+- Backend stores: email, device fingerprint, start timestamp, and status
+- Client stores: email, install date, device fingerprint, and daily usage
+- Trial validation happens both client-side and server-side
+
+### After Trial Expires
+- Users are prompted to join the waitlist for future access
+- Settings and translation features become unavailable
+- Previously saved settings are preserved for when access is restored
+
 ## What's New in v2.0
 
-✨ **Universal Video Support**
+**Universal Video Support**
 - Works on ANY website with HTML5 video, not just YouTube
 - Automatic video detection across all web pages
 
-🎤 **Live Audio Transcription**
+**Live Audio Transcription**
 - Real-time speech-to-text for videos without captions
 - Powered by Google Cloud Speech-to-Text
 - 3-second audio chunks for low latency
 
-🌍 **Smart Language Detection**
+**Smart Language Detection**
 - Automatic source language detection
 - Skips translation when source matches target (transcription-only mode)
 - 15+ languages supported for speech recognition
 
-⚡ **Real-Time Processing**
+**Real-Time Processing**
 - YouTube transcripts processed on-demand (no upfront wait)
 - Live audio translated as you watch
 - Instant feedback in UI
 
-🔒 **Enhanced Permissions**
+**Enhanced Permissions**
 - `tabCapture` permission for audio capture
 - Works on all URLs (not just YouTube)
 
@@ -298,8 +329,9 @@ MIT License - Free to use and modify
 **TalkBridge v2.0.0** - Universal Video Translation Extension
 
 **Major Changes:**
-- 🌐 Universal video support (all websites)
-- 🎤 Live audio transcription (Google Cloud Speech-to-Text)
-- 🔄 Dual-mode operation (Transcript + Live Audio)
-- 🌍 Auto language detection
-- ⚡ Real-time on-demand translation
+- Universal video support (all websites)
+- Live audio transcription (Google Cloud Speech-to-Text)
+- Dual-mode operation (Transcript + Live Audio)
+- Auto language detection
+- Real-time on-demand translation
+- 7-day free trial with daily usage limits
