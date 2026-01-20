@@ -557,7 +557,7 @@
 .translated-text,
 .transcript-text {
   font-size: 14px;
-  color: #333;
+  color: var(--tb-text-primary);
   font-weight: 500;
   line-height: 1.6;
 }
