@@ -4,6 +4,11 @@ console.log('🌉 TalkBridge extension loaded (Auto-play)');
 const API_URL = 'https://talkbridge-backend-1053199504066.us-central1.run.app';
 const BACKEND_URL = API_URL; // Backend URL for microphone transcription
 const BUFFER_SIZE = 3; // Number of segments to buffer before auto-play
+const TRIAL_DAYS = 7;
+
+// Trial status
+let isTrialExpired = false;
+let isOnWaitlist = false;
 
 // Helper function to retry fetch with exponential backoff
 async function fetchWithRetry(url, options, maxRetries = 3) {
@@ -233,6 +238,16 @@ function handleVideoPlay() {
 
 async function loadVideoFeatures() {
   try {
+    // Check trial status first
+    await checkTrialStatus();
+
+    // If trial expired, just show the FAB with expired message and return
+    if (isTrialExpired) {
+      console.log('⏰ Trial expired - all translation services are disabled');
+      createUnifiedPanel(); // This will only create FAB with trial message
+      return;
+    }
+
     console.log('🎯 Loading video features...');
 
     // Get video player reference
@@ -829,6 +844,9 @@ function handleAudioCaptureError(error) {
 
 // Display live transcript in the UI
 function displayLiveTranscript(originalText, translatedText, timestamp, isTranscriptionOnly) {
+  // Block if trial expired
+  if (isTrialExpired) return;
+
   const translationList = document.getElementById('translation-list');
   if (!translationList) return;
 
@@ -1015,9 +1033,41 @@ function getYouTubePlayer() {
   }
 }
 
+// Check trial status
+async function checkTrialStatus() {
+  try {
+    const trialData = await chrome.storage.local.get({
+      trialEmail: null,
+      installDate: null,
+      isRegistered: false
+    });
+
+    if (!trialData.trialEmail || !trialData.installDate) {
+      // Not registered yet
+      isTrialExpired = true;
+      isOnWaitlist = false;
+      return;
+    }
+
+    const daysSinceInstall = Math.floor((Date.now() - trialData.installDate) / (1000 * 60 * 60 * 24));
+    const daysRemaining = TRIAL_DAYS - daysSinceInstall;
+
+    isTrialExpired = daysRemaining <= 0;
+    isOnWaitlist = trialData.isRegistered;
+
+    console.log(`📅 Trial status: ${isTrialExpired ? 'EXPIRED' : 'ACTIVE'}, Days remaining: ${daysRemaining}, On waitlist: ${isOnWaitlist}`);
+  } catch (error) {
+    console.error('Failed to check trial status:', error);
+    isTrialExpired = false; // Default to allowing access on error
+  }
+}
+
 // Create unified panel with auto-play controls
-function createUnifiedPanel() {
+async function createUnifiedPanel() {
   if (unifiedPanel) return;
+
+  // Check trial status first
+  await checkTrialStatus();
 
   // Remove any existing panel and FAB (in case of duplicate script load)
   const existingPanel = document.getElementById('talkbridge-unified-panel');
@@ -1032,6 +1082,25 @@ function createUnifiedPanel() {
   const fab = document.createElement('div');
   fab.id = 'talkbridge-fab';
   const logoUrl = chrome.runtime.getURL('assets/logo48.png');
+
+  // Show trial expired state on FAB - only show FAB with tooltip, no panel
+  if (isTrialExpired) {
+    fab.classList.add('trial-expired');
+    fab.innerHTML = `
+      <img class="fab-icon" src="${logoUrl}" alt="TalkBridge">
+      <div class="fab-tooltip">Free Trial Ended</div>
+    `;
+    document.body.appendChild(fab);
+
+    // On click, open extension popup
+    fab.addEventListener('click', () => {
+      chrome.runtime.sendMessage({ action: 'openPopup' });
+    });
+
+    // Don't create panel when trial is expired - just show FAB with message
+    return;
+  }
+
   fab.innerHTML = `
     <img class="fab-icon" src="${logoUrl}" alt="TalkBridge">
     <div class="fab-tooltip">TalkBridge</div>
@@ -1041,7 +1110,7 @@ function createUnifiedPanel() {
   // Create main panel (hidden by default, user clicks FAB or extension icon to show)
   unifiedPanel = document.createElement('div');
   unifiedPanel.id = 'talkbridge-unified-panel';
-  unifiedPanel.className = 'hidden'; // Hidden by default
+  unifiedPanel.className = 'hidden';
 
   unifiedPanel.innerHTML = `
     <div class="panel-header">
@@ -1064,6 +1133,7 @@ function createUnifiedPanel() {
         </div>
       </div>
     </div>
+    ${trialExpiredOverlay}
 
     ${(hasTranslation && hasQA) ? `
       <div class="panel-tabs">
@@ -1255,6 +1325,12 @@ function updateAudioModeButtonText() {
 
 // Toggle audio mode between translated and original
 function toggleAudioMode() {
+  // Block if trial expired
+  if (isTrialExpired) {
+    showNotification('Free trial ended. Join our waitlist!', 'error');
+    return;
+  }
+
   const btn = document.getElementById('audio-mode-btn');
   const icon = btn?.querySelector('.mode-icon');
 
@@ -1492,6 +1568,9 @@ async function startProgressiveTranslation() {
 }
 
 function addTranslationItem(index, translatedText, container, sentence) {
+  // Block if trial expired
+  if (isTrialExpired) return;
+
   if (!container) return;
 
   const item = document.createElement('div');
@@ -1521,6 +1600,9 @@ function addTranslationItem(index, translatedText, container, sentence) {
 }
 
 function addTranscriptItem(index, segment, container) {
+  // Block if trial expired
+  if (isTrialExpired) return;
+
   if (!container) return;
 
   const item = document.createElement('div');
@@ -1535,6 +1617,9 @@ function addTranscriptItem(index, segment, container) {
 }
 
 async function translateGreeting() {
+  // Block if trial expired
+  if (isTrialExpired) return;
+
   try {
     const greetingElement = document.getElementById('qa-greeting');
     if (!greetingElement) return;
@@ -1559,6 +1644,9 @@ async function translateGreeting() {
 }
 
 async function generateAudio(index, translatedText) {
+  // Block if trial expired
+  if (isTrialExpired) return;
+
   try {
     const response = await fetch(`${API_URL}/api/translation/text-to-speech`, {
       method: 'POST',
@@ -1784,6 +1872,12 @@ function pausePlayback() {
 }
 
 function resumePlayback() {
+  // Block if trial expired
+  if (isTrialExpired) {
+    showNotification('Free trial ended. Join our waitlist!', 'error');
+    return;
+  }
+
   if (isSyncingPlayback) return; // Prevent infinite loop
   isSyncingPlayback = true;
 
@@ -1976,6 +2070,12 @@ function formatTime(seconds) {
 
 // Q&A functions
 async function sendQuestion() {
+  // Block if trial expired
+  if (isTrialExpired) {
+    showNotification('Free trial ended. Join our waitlist!', 'error');
+    return;
+  }
+
   const input = document.getElementById('qa-input');
   const question = input.value.trim();
   if (!question) return;
@@ -2540,6 +2640,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Handle tab capture started from offscreen document
   if (message.action === 'tabCaptureStarted') {
+    // Block if trial expired
+    if (isTrialExpired) {
+      console.log('⏰ Trial expired - blocking tab capture');
+      showNotification('Free trial ended. Join our waitlist!', 'error');
+      return;
+    }
+
     console.log('✅ Tab audio capture started in offscreen document');
     transcriptionMode = 'live';
     isTabCaptureActive = true; // Mark capture as active

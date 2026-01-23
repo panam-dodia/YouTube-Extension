@@ -316,6 +316,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep message channel open for async response
   }
 
+  // Handle simple popup open request (for trial expired state)
+  if (message.action === 'openPopup') {
+    console.log('📱 Opening popup...');
+
+    chrome.action.openPopup()
+      .then(() => {
+        console.log('✅ Popup opened successfully');
+        sendResponse({ success: true });
+      })
+      .catch((error) => {
+        console.error('❌ Failed to open popup:', error);
+        sendResponse({ error: error.message });
+      });
+
+    return true;
+  }
+
   // Handle stop tab capture request
   if (message.action === 'stopTabCapture') {
     console.log('🛑 Stopping tab capture...');

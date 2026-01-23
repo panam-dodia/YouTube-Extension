@@ -102,6 +102,19 @@
   opacity: 1;
 }
 
+/* Trial Expired FAB State */
+#talkbridge-fab.trial-expired {
+  cursor: pointer;
+}
+
+#talkbridge-fab.trial-expired:hover {
+  transform: scale(1.1);
+}
+
+#talkbridge-fab.trial-expired .fab-icon {
+  filter: grayscale(20%) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
 /* ========== Main Panel ========== */
 #talkbridge-unified-panel {
   position: fixed;
