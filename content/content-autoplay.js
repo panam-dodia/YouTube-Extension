@@ -1031,8 +1031,9 @@ function createUnifiedPanel() {
   // Create floating button (shows when panel is hidden)
   const fab = document.createElement('div');
   fab.id = 'talkbridge-fab';
+  const logoUrl = chrome.runtime.getURL('assets/logo48.png');
   fab.innerHTML = `
-    <div class="fab-icon">🌉</div>
+    <img class="fab-icon" src="${logoUrl}" alt="TalkBridge">
     <div class="fab-tooltip">TalkBridge</div>
   `;
   document.body.appendChild(fab);
