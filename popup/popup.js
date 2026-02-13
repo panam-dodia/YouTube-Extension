@@ -78,6 +78,61 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   console.log('🔍 Trial data:', trialData);
 
+  // Attach trial start button handler early (before any return)
+  startTrialBtn.addEventListener('click', async () => {
+    const email = trialEmailInput.value.trim();
+
+    if (!email || !email.includes('@')) {
+      alert('Please enter a valid email address');
+      return;
+    }
+
+    try {
+      startTrialBtn.textContent = 'Verifying...';
+      startTrialBtn.disabled = true;
+
+      // Validate email with backend
+      const response = await fetch(`${API_URL}/api/trial/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          deviceFingerprint: deviceInfo.hash,
+          deviceInfo: deviceInfo.fingerprint
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        if (response.status === 409) {
+          alert('This email or device has already been used for a trial. Each email can only start one trial.');
+        } else {
+          alert(result.error || 'Failed to start trial. Please try again.');
+        }
+        startTrialBtn.textContent = 'Start 7-Day Free Trial';
+        startTrialBtn.disabled = false;
+        return;
+      }
+
+      // Save trial data locally
+      await chrome.storage.local.set({
+        trialEmail: email,
+        installDate: Date.now(),
+        deviceFingerprint: deviceInfo.hash
+      });
+
+      // Reload the popup to show trial UI
+      location.reload();
+
+    } catch (error) {
+      console.error('Trial start error:', error);
+      alert('Failed to start trial. Please check your internet connection.');
+      startTrialBtn.textContent = 'Start 7-Day Free Trial';
+      startTrialBtn.disabled = false;
+    }
+  });
+
   // Check if user needs to register email first
   if (!trialData.trialEmail || !trialData.installDate) {
     console.log('❌ Email not registered, showing email registration');
@@ -360,60 +415,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // Handle trial email registration
-  startTrialBtn.addEventListener('click', async () => {
-    const email = trialEmailInput.value.trim();
-
-    if (!email || !email.includes('@')) {
-      alert('Please enter a valid email address');
-      return;
-    }
-
-    try {
-      startTrialBtn.textContent = 'Verifying...';
-      startTrialBtn.disabled = true;
-
-      // Validate email with backend
-      const response = await fetch(`${API_URL}/api/trial/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email,
-          deviceFingerprint: deviceInfo.hash,
-          deviceInfo: deviceInfo.fingerprint
-        })
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        if (response.status === 409) {
-          alert('This email or device has already been used for a trial. Each email can only start one trial.');
-        } else {
-          alert(result.error || 'Failed to start trial. Please try again.');
-        }
-        startTrialBtn.textContent = 'Start 7-Day Free Trial';
-        startTrialBtn.disabled = false;
-        return;
-      }
-
-      // Save trial data locally
-      await chrome.storage.local.set({
-        trialEmail: email,
-        installDate: Date.now(),
-        deviceFingerprint: deviceInfo.hash
-      });
-
-      // Reload the popup to show trial UI
-      location.reload();
-
-    } catch (error) {
-      console.error('Trial start error:', error);
-      alert('Failed to start trial. Please check your internet connection.');
-      startTrialBtn.textContent = 'Start 7-Day Free Trial';
-      startTrialBtn.disabled = false;
-    }
-  });
+  // Handle trial email registration (handler attached earlier, before return)
 
   function startUsageUpdates() {
     console.log('🔄 Starting usage updates...');

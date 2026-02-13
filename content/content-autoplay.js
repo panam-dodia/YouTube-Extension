@@ -107,6 +107,56 @@ function testAudioOutput() {
 // Expose test function to console
 window.testAudioOutput = testAudioOutput;
 
+// Create the FAB early - always visible on YouTube
+async function createFab() {
+  try {
+    // Don't duplicate
+    if (document.getElementById('talkbridge-fab')) return;
+
+    await checkTrialStatus();
+
+    const fab = document.createElement('div');
+    fab.id = 'talkbridge-fab';
+    const logoUrl = chrome.runtime.getURL('assets/logo48.png');
+
+    if (isTrialExpired) {
+      fab.classList.add('trial-expired');
+      fab.innerHTML = `
+        <img class="fab-icon" src="${logoUrl}" alt="TalkBridge">
+        <div class="fab-tooltip">Free Trial Ended</div>
+      `;
+      fab.addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'openPopup' });
+      });
+    } else {
+      fab.innerHTML = `
+        <img class="fab-icon" src="${logoUrl}" alt="TalkBridge">
+        <div class="fab-tooltip">TalkBridge</div>
+      `;
+      fab.addEventListener('click', () => {
+        if (unifiedPanel) {
+          unifiedPanel.classList.remove('hidden');
+          fab.style.display = 'none';
+        } else {
+          // No panel yet - show helpful message
+          const video = document.querySelector('video');
+          if (!video) {
+            showNotification('Play a video to get started with translation!', 'info');
+          } else if (!settings.enableTranslation && !settings.enableQA) {
+            showNotification('Enable translation in the extension settings first!', 'info');
+            chrome.runtime.sendMessage({ action: 'openPopup' });
+          }
+        }
+      });
+    }
+
+    document.body.appendChild(fab);
+    console.log('✅ FAB created successfully, trial expired:', isTrialExpired);
+  } catch (error) {
+    console.error('❌ Failed to create FAB:', error);
+  }
+}
+
 // Initialize extension
 async function init() {
   const stored = await chrome.storage.sync.get({
@@ -117,6 +167,12 @@ async function init() {
     sourceLanguage: 'en'
   });
   settings = stored;
+
+  // Always show FAB on the page
+  await createFab();
+
+  // If trial expired, don't load anything else
+  if (isTrialExpired) return;
 
   // Detect if we're on a video page
   const detectAndLoadVideo = () => {
@@ -241,10 +297,9 @@ async function loadVideoFeatures() {
     // Check trial status first
     await checkTrialStatus();
 
-    // If trial expired, just show the FAB with expired message and return
+    // If trial expired, FAB is already showing the expired message
     if (isTrialExpired) {
       console.log('⏰ Trial expired - all translation services are disabled');
-      createUnifiedPanel(); // This will only create FAB with trial message
       return;
     }
 
@@ -261,57 +316,100 @@ async function loadVideoFeatures() {
 
     // Try to fetch YouTube transcript first (if on YouTube)
     let hasTranscript = false;
+    let useDomCapture = false;
     if (isYouTube && currentVideoId && currentVideoId.startsWith('video_') === false) {
       try {
-        transcript = await fetchYouTubeTranscript(currentVideoId);
-        console.log(`✅ Fetched ${transcript.length} transcript segments`);
-        transcriptText = transcript.map(t => t.text).join(' ');
-        hasTranscript = true;
-        transcriptionMode = 'transcript';
+        const transcriptResult = await fetchYouTubeTranscript(currentVideoId);
 
-        // Start usage tracking for transcript-based translation (if not an ad)
-        if (!isAdPlaying()) {
-          chrome.runtime.sendMessage({ action: 'startUsageTracking' });
-          console.log('⏱️ Started usage tracking for transcript-based translation');
-        } else {
-          console.log('📺 Ad detected on page load - usage tracking will start after ad');
-        }
+        // Check if we got a DOM capture signal instead of segments
+        if (transcriptResult && transcriptResult.mode === 'dom_capture') {
+          useDomCapture = true;
+          console.log('📝 Will use DOM caption capture mode');
+        } else if (Array.isArray(transcriptResult) && transcriptResult.length > 0) {
+          transcript = transcriptResult;
+          console.log(`✅ Fetched ${transcript.length} transcript segments`);
+          transcriptText = transcript.map(t => t.text).join(' ');
+          hasTranscript = true;
+          transcriptionMode = 'transcript';
 
-        // Start ad monitoring to pause/resume during ads
-        startAdMonitoring();
-
-        // Add video play/pause listeners to control usage tracking
-        if (youtubeVideo) {
-          // Remove old listeners to avoid duplicates
-          youtubeVideo.removeEventListener('pause', handleVideoPause);
-          youtubeVideo.removeEventListener('play', handleVideoPlay);
-
-          // Add new listeners
-          youtubeVideo.addEventListener('pause', handleVideoPause);
-          youtubeVideo.addEventListener('play', handleVideoPlay);
-        }
-
-        // Detect gender for better voice matching
-        if (settings.enableTranslation && transcript.length > 0) {
-          await detectSpeakerGender();
-        }
-
-        // Store transcript
-        await chrome.storage.local.set({
-          [`transcript_${currentVideoId}`]: {
-            videoId: currentVideoId,
-            transcript: transcript,
-            timestamp: Date.now()
+          // Start usage tracking for transcript-based translation (if not an ad)
+          if (!isAdPlaying()) {
+            chrome.runtime.sendMessage({ action: 'startUsageTracking' });
+            console.log('⏱️ Started usage tracking for transcript-based translation');
+          } else {
+            console.log('📺 Ad detected on page load - usage tracking will start after ad');
           }
-        });
+
+          // Start ad monitoring to pause/resume during ads
+          startAdMonitoring();
+
+          // Add video play/pause listeners to control usage tracking
+          if (youtubeVideo) {
+            youtubeVideo.removeEventListener('pause', handleVideoPause);
+            youtubeVideo.removeEventListener('play', handleVideoPlay);
+            youtubeVideo.addEventListener('pause', handleVideoPause);
+            youtubeVideo.addEventListener('play', handleVideoPlay);
+          }
+
+          // Detect gender for better voice matching
+          if (settings.enableTranslation && transcript.length > 0) {
+            await detectSpeakerGender();
+          }
+
+          // Store transcript
+          await chrome.storage.local.set({
+            [`transcript_${currentVideoId}`]: {
+              videoId: currentVideoId,
+              transcript: transcript,
+              timestamp: Date.now()
+            }
+          });
+        } else {
+          console.log('⚠️ Transcript returned empty array');
+        }
       } catch (error) {
-        console.log('⚠️ No transcript available, falling back to live audio capture');
-        hasTranscript = false;
+        console.log('⚠️ Transcript fetch error:', error.message);
       }
     }
 
-    // If no transcript, use live tab audio capture
-    if (!hasTranscript) {
+    // Tier 3: DOM caption capture mode
+    if (!hasTranscript && useDomCapture) {
+      transcriptionMode = 'dom_capture';
+      console.log('🔤 Initializing DOM caption capture mode');
+
+      // Tell MAIN world to start capturing captions from the DOM
+      window.postMessage({ type: 'TB_START_DOM_CAPTURE', videoId: currentVideoId }, '*');
+
+      // Listen for real-time caption segments from DOM observer
+      if (!window._tbDomCaptureHandler) {
+        window._tbDomCaptureHandler = (event) => {
+          if (event.source === window && event.data?.type === 'TB_DOM_CAPTION_SEGMENT') {
+            const seg = event.data.segment;
+            if (seg && seg.text) {
+              // Add to transcript array for translation
+              transcript.push(seg);
+              transcriptText += ' ' + seg.text;
+
+              // Process for real-time translation
+              if (settings.enableTranslation && settings.targetLanguage) {
+                handleDomCaptionSegment(seg);
+              }
+            }
+          }
+        };
+        window.addEventListener('message', window._tbDomCaptureHandler);
+      }
+
+      // Start usage tracking
+      if (!isAdPlaying()) {
+        chrome.runtime.sendMessage({ action: 'startUsageTracking' });
+        console.log('⏱️ Started usage tracking for DOM caption capture');
+      }
+      startAdMonitoring();
+    }
+
+    // If no transcript and no DOM capture, use live tab audio capture
+    if (!hasTranscript && !useDomCapture) {
       transcriptionMode = 'live';
       console.log('🎤 Initializing live tab audio capture mode');
 
@@ -340,6 +438,11 @@ async function loadVideoFeatures() {
             // Already disconnected or never connected
           }
         }
+      } else if (transcriptionMode === 'dom_capture') {
+        // DOM capture mode: keep video unmuted so captions render, lower volume
+        console.log('🔉 Lowering video volume for DOM caption capture mode');
+        youtubeVideo.volume = 0.05;
+        youtubeVideo.muted = false;
       } else if (transcriptionMode === 'live') {
         // In live tab capture mode, DO NOT mute video - tab capture needs audio to be playing
         console.log('🔊 Keeping video unmuted for tab audio capture');
@@ -354,8 +457,47 @@ async function loadVideoFeatures() {
     if (settings.enableTranslation && settings.targetLanguage) {
       if (transcriptionMode === 'transcript') {
         startProgressiveTranslation();
+      } else if (transcriptionMode === 'dom_capture') {
+        // DOM capture mode: translation happens in real-time via handleDomCaptionSegment
+        console.log('🔤 DOM caption capture active - translating captions as they appear');
+        const statusText = document.getElementById('translation-status-text');
+        if (statusText) {
+          statusText.textContent = 'Capturing captions and translating...';
+        }
       } else if (transcriptionMode === 'live') {
-        console.log('📡 Live translation mode ready - click "Start Translation" to begin');
+        // Update status text
+        const statusText = document.getElementById('translation-status-text');
+        if (statusText) {
+          statusText.textContent = 'Starting live translation...';
+        }
+
+        // Only auto-start if user has previously invoked the extension (clicked FAB/popup)
+        // activeTab permission requires a user gesture to grant capture access
+        console.log('📡 Attempting live tab audio capture...');
+        chrome.runtime.sendMessage({
+          action: 'startDirectTabCapture',
+          sourceLanguage: settings.sourceLanguage || 'en'
+        }, (response) => {
+          if (response?.error) {
+            const isPermError = response.error.includes('activeTab') || response.error.includes('invoked');
+            if (isPermError) {
+              console.log('⏸️ Tab capture needs user interaction - click the TalkBridge button first');
+              if (statusText) {
+                statusText.textContent = 'Click the TalkBridge button to start translation';
+              }
+            } else {
+              console.error('❌ Failed to start live capture:', response.error);
+              if (statusText) {
+                statusText.textContent = 'Failed to start live capture. Try refreshing the page.';
+              }
+            }
+          } else {
+            console.log('✅ Live capture started');
+            if (statusText) {
+              statusText.textContent = 'Listening and translating...';
+            }
+          }
+        });
       }
     }
 
@@ -366,66 +508,46 @@ async function loadVideoFeatures() {
 }
 
 async function fetchYouTubeTranscript(videoId) {
-  const INNERTUBE_API_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-
   try {
-    const playerResponse = await fetch(
-      `https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          context: {
-            client: {
-              clientName: 'WEB',
-              clientVersion: '2.20250110.01.00',
-              hl: 'en',
-              gl: 'US'
-            }
-          },
-          videoId: videoId
-        })
-      }
-    );
+    // Uses tiered strategy via MAIN world script (page-context.js):
+    //   Tier 1: get_transcript InnerTube endpoint
+    //   Tier 2: timedtext API via captionTracks
+    //   Tier 3: returns method='dom_capture' to signal live DOM capture
+    console.log('📝 Requesting transcript from MAIN world (tiered strategy)...');
 
-    const playerData = await playerResponse.json();
-    const captions = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    const result = await new Promise((resolve) => {
+      const handler = (event) => {
+        if (event.source === window && event.data?.type === 'TB_TRANSCRIPT_RESPONSE') {
+          window.removeEventListener('message', handler);
+          resolve(event.data);
+        }
+      };
+      window.addEventListener('message', handler);
 
-    if (!captions || captions.length === 0) {
-      throw new Error('No captions available');
+      window.postMessage({ type: 'TB_GET_TRANSCRIPT', videoId: videoId }, '*');
+
+      setTimeout(() => {
+        window.removeEventListener('message', handler);
+        resolve({ segments: [], error: 'Timeout' });
+      }, 30000);
+    });
+
+    if (result.segments && result.segments.length > 0) {
+      console.log(`✅ Got ${result.segments.length} segments via ${result.method} (lang: ${result.language})`);
+      return result.segments;
     }
 
-    let selectedTrack = captions.find(track =>
-      track.languageCode === 'en' || track.languageCode?.startsWith('en')
-    ) || captions[0];
-
-    const transcriptResponse = await fetch(selectedTrack.baseUrl);
-    const transcriptXML = await transcriptResponse.text();
-
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(transcriptXML, 'text/xml');
-    const textElements = xmlDoc.getElementsByTagName('text');
-
-    const transcript = [];
-    for (let element of textElements) {
-      const text = element.textContent
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&apos;/g, "'");
-
-      const start = parseFloat(element.getAttribute('start'));
-      const duration = parseFloat(element.getAttribute('dur'));
-
-      transcript.push({ text, start, duration });
+    // If MAIN world says use DOM capture, return special marker
+    if (result.method === 'dom_capture') {
+      console.log('📝 Tiers 1-2 empty, switching to DOM caption capture...');
+      return { mode: 'dom_capture' };
     }
 
-    return transcript;
+    console.log('⚠️ All transcript tiers failed:', result.error || 'unknown');
+    return [];
   } catch (error) {
     console.error('Failed to fetch transcript:', error);
-    throw error;
+    return [];
   }
 }
 
@@ -692,6 +814,30 @@ async function playNextAudio() {
 }
 
 // Handler for live transcript chunks from audio capture
+// Handle DOM caption segments (Tier 3 - real-time captions from MutationObserver)
+async function handleDomCaptionSegment(segment) {
+  try {
+    const { text, start } = segment;
+
+    // Deduplication
+    const segId = `dom_${text}_${Math.floor(start)}`;
+    if (processedTranscripts.has(segId)) return;
+    processedTranscripts.add(segId);
+
+    console.log(`🔤 DOM caption: "${text}" at ${start.toFixed(1)}s`);
+
+    // Display in transcript panel
+    addTranscriptItem(text, start, start + 3);
+
+    // Translate if enabled
+    if (settings.enableTranslation && settings.targetLanguage) {
+      await processTranscript(text, start);
+    }
+  } catch (error) {
+    console.error('❌ Error handling DOM caption:', error);
+  }
+}
+
 async function handleLiveTranscript(transcriptChunk) {
   try {
     const { text, confidence, timestamp, language } = transcriptChunk;
@@ -1065,49 +1211,17 @@ async function checkTrialStatus() {
 // Create unified panel with auto-play controls
 async function createUnifiedPanel() {
   if (unifiedPanel) return;
+  if (isTrialExpired) return;
 
-  // Check trial status first
-  await checkTrialStatus();
-
-  // Remove any existing panel and FAB (in case of duplicate script load)
+  // Remove any existing panel (in case of duplicate script load)
   const existingPanel = document.getElementById('talkbridge-unified-panel');
-  const existingFab = document.getElementById('talkbridge-fab');
   if (existingPanel) existingPanel.remove();
-  if (existingFab) existingFab.remove();
 
+  const fab = document.getElementById('talkbridge-fab');
   const hasTranslation = settings.enableTranslation && settings.targetLanguage;
   const hasQA = settings.enableQA; // API key is on backend, not required from user
 
-  // Create floating button (shows when panel is hidden)
-  const fab = document.createElement('div');
-  fab.id = 'talkbridge-fab';
-  const logoUrl = chrome.runtime.getURL('assets/logo48.png');
-
-  // Show trial expired state on FAB - only show FAB with tooltip, no panel
-  if (isTrialExpired) {
-    fab.classList.add('trial-expired');
-    fab.innerHTML = `
-      <img class="fab-icon" src="${logoUrl}" alt="TalkBridge">
-      <div class="fab-tooltip">Free Trial Ended</div>
-    `;
-    document.body.appendChild(fab);
-
-    // On click, open extension popup
-    fab.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'openPopup' });
-    });
-
-    // Don't create panel when trial is expired - just show FAB with message
-    return;
-  }
-
-  fab.innerHTML = `
-    <img class="fab-icon" src="${logoUrl}" alt="TalkBridge">
-    <div class="fab-tooltip">TalkBridge</div>
-  `;
-  document.body.appendChild(fab);
-
-  // Create main panel (hidden by default, user clicks FAB or extension icon to show)
+  // Create main panel (hidden by default, user clicks FAB to show)
   unifiedPanel = document.createElement('div');
   unifiedPanel.id = 'talkbridge-unified-panel';
   unifiedPanel.className = 'hidden';
@@ -1133,8 +1247,6 @@ async function createUnifiedPanel() {
         </div>
       </div>
     </div>
-    ${trialExpiredOverlay}
-
     ${(hasTranslation && hasQA) ? `
       <div class="panel-tabs">
         <button class="tab-btn active" data-tab="translation">
@@ -1241,20 +1353,15 @@ async function createUnifiedPanel() {
     });
   }
 
-  // Event listeners
-  fab.addEventListener('click', () => {
-    unifiedPanel.classList.remove('hidden');
-    fab.style.display = 'none';
-  });
-
+  // Event listeners - panel minimize/close (FAB click is handled in createFab)
   document.getElementById('panel-minimize')?.addEventListener('click', () => {
     unifiedPanel.classList.add('hidden');
-    fab.style.display = 'flex';
+    if (fab) fab.style.display = 'flex';
   });
 
-  document.getElementById('panel-close').addEventListener('click', () => {
+  document.getElementById('panel-close')?.addEventListener('click', () => {
     unifiedPanel.classList.add('hidden');
-    fab.style.display = 'flex';
+    if (fab) fab.style.display = 'flex';
   });
 
   // Translation control is now handled by the extension popup
@@ -2740,11 +2847,9 @@ function handleVideoChange() {
       audioCaptureManager = null;
     }
 
-    // Remove old panel and FAB
+    // Remove old panel (keep FAB - it's managed by createFab)
     const existingPanel = document.getElementById('talkbridge-unified-panel');
-    const existingFab = document.getElementById('talkbridge-fab');
     if (existingPanel) existingPanel.remove();
-    if (existingFab) existingFab.remove();
     unifiedPanel = null;
 
     // Reset state

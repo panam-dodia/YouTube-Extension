@@ -39,7 +39,7 @@
   border-radius: 50%;
   box-shadow: var(--tb-shadow-lg);
   cursor: pointer;
-  z-index: 10000;
+  z-index: 2147483647;
   display: flex;
   align-items: center;
   justify-content: center;

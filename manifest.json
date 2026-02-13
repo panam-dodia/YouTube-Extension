@@ -29,6 +29,12 @@
       "js": ["content/audio-capture.js", "content/tab-audio-capture.js", "content/content-autoplay.js"],
       "css": ["content/content-startup.css"],
       "run_at": "document_end"
+    },
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content/page-context.js"],
+      "run_at": "document_end",
+      "world": "MAIN"
     }
   ],
   "background": {
