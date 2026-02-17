@@ -524,12 +524,12 @@
 
 .translation-item,
 .transcript-item {
-  background: var(--tb-surface);
+  background: #1A1F28;
   border-radius: var(--tb-radius-md);
   padding: 18px;
   box-shadow: var(--tb-shadow-sm);
   transition: var(--tb-transition);
-  border: 1px solid transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 
@@ -571,7 +571,7 @@
 .translated-text,
 .transcript-text {
   font-size: 14px;
-  color: var(--tb-text-primary);
+  color: #E8ECF0;
   font-weight: 500;
   line-height: 1.6;
 }

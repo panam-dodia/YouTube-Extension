@@ -242,14 +242,18 @@ function isAdPlaying() {
 
 // Monitor for ads continuously
 let adCheckInterval = null;
+let lastAdState = false; // Track previous ad state to only log on transitions
 function startAdMonitoring() {
   if (adCheckInterval) return; // Already monitoring
+  lastAdState = false;
 
   adCheckInterval = setInterval(() => {
     const adIsPlaying = isAdPlaying();
 
-    if (adIsPlaying && youtubeVideo && !youtubeVideo.paused) {
-      // Ad is playing - stop tracking and mute translation
+    // Only act on state transitions
+    if (adIsPlaying && !lastAdState) {
+      // Ad just started
+      lastAdState = true;
       chrome.runtime.sendMessage({ action: 'stopUsageTracking' });
 
       // Stop audio playback if playing
@@ -260,12 +264,15 @@ function startAdMonitoring() {
       }
 
       console.log('📺 Ad detected - paused translation and usage tracking');
-    } else if (!adIsPlaying && youtubeVideo && !youtubeVideo.paused) {
-      // No ad and video is playing - resume tracking
-      chrome.runtime.sendMessage({ action: 'startUsageTracking' });
+    } else if (!adIsPlaying && lastAdState) {
+      // Ad just ended
+      lastAdState = false;
+      if (youtubeVideo && !youtubeVideo.paused) {
+        chrome.runtime.sendMessage({ action: 'startUsageTracking' });
+      }
       console.log('▶️ Ad ended - resumed translation and usage tracking');
     }
-  }, 500); // Check every 500ms for ad changes
+  }, 1000); // Check every second
 }
 
 function stopAdMonitoring() {
@@ -377,6 +384,10 @@ async function loadVideoFeatures() {
       transcriptionMode = 'dom_capture';
       console.log('🔤 Initializing DOM caption capture mode');
 
+      // Initialize transcript array for DOM capture
+      transcript = [];
+      transcriptText = '';
+
       // Tell MAIN world to start capturing captions from the DOM
       window.postMessage({ type: 'TB_START_DOM_CAPTURE', videoId: currentVideoId }, '*');
 
@@ -384,9 +395,13 @@ async function loadVideoFeatures() {
       if (!window._tbDomCaptureHandler) {
         window._tbDomCaptureHandler = (event) => {
           if (event.source === window && event.data?.type === 'TB_DOM_CAPTION_SEGMENT') {
+            // Skip captions during ads
+            if (isAdPlaying()) return;
+
             const seg = event.data.segment;
             if (seg && seg.text) {
-              // Add to transcript array for translation
+              // Add to transcript array
+              if (!transcript) transcript = [];
               transcript.push(seg);
               transcriptText += ' ' + seg.text;
 
@@ -439,9 +454,10 @@ async function loadVideoFeatures() {
           }
         }
       } else if (transcriptionMode === 'dom_capture') {
-        // DOM capture mode: keep video unmuted so captions render, lower volume
-        console.log('🔉 Lowering video volume for DOM caption capture mode');
-        youtubeVideo.volume = 0.05;
+        // DOM capture mode: keep original audio at full volume while buffering first translations
+        // Volume will be lowered once translated audio is ready to play
+        console.log('🔊 Keeping original audio while buffering translations...');
+        youtubeVideo.volume = 1.0;
         youtubeVideo.muted = false;
       } else if (transcriptionMode === 'live') {
         // In live tab capture mode, DO NOT mute video - tab capture needs audio to be playing
@@ -458,11 +474,11 @@ async function loadVideoFeatures() {
       if (transcriptionMode === 'transcript') {
         startProgressiveTranslation();
       } else if (transcriptionMode === 'dom_capture') {
-        // DOM capture mode: translation happens in real-time via handleDomCaptionSegment
-        console.log('🔤 DOM caption capture active - translating captions as they appear');
+        // DOM capture mode: buffer first translations, then switch audio
+        console.log('🔤 DOM caption capture active - buffering first translations...');
         const statusText = document.getElementById('translation-status-text');
         if (statusText) {
-          statusText.textContent = 'Capturing captions and translating...';
+          statusText.textContent = 'Buffering captions... (playing original audio)';
         }
       } else if (transcriptionMode === 'live') {
         // Update status text
@@ -509,46 +525,177 @@ async function loadVideoFeatures() {
 
 async function fetchYouTubeTranscript(videoId) {
   try {
-    // Uses tiered strategy via MAIN world script (page-context.js):
-    //   Tier 1: get_transcript InnerTube endpoint
-    //   Tier 2: timedtext API via captionTracks
-    //   Tier 3: returns method='dom_capture' to signal live DOM capture
-    console.log('📝 Requesting transcript from MAIN world (tiered strategy)...');
+    // Strategy:
+    //   1. MAIN world extracts caption track URLs from YouTube's player
+    //   2. We fetch those URLs via background service worker (bypasses browser restrictions)
+    //   3. If no tracks or all fetches empty, signal DOM capture mode
+    console.log('📝 Requesting caption tracks from MAIN world...');
 
-    const result = await new Promise((resolve) => {
+    // Step 1: Get caption track URLs from MAIN world
+    const trackResult = await new Promise((resolve) => {
       const handler = (event) => {
-        if (event.source === window && event.data?.type === 'TB_TRANSCRIPT_RESPONSE') {
+        if (event.source === window && event.data?.type === 'TB_CAPTION_TRACKS') {
           window.removeEventListener('message', handler);
           resolve(event.data);
         }
       };
       window.addEventListener('message', handler);
-
       window.postMessage({ type: 'TB_GET_TRANSCRIPT', videoId: videoId }, '*');
 
       setTimeout(() => {
         window.removeEventListener('message', handler);
-        resolve({ segments: [], error: 'Timeout' });
-      }, 30000);
+        resolve({ tracks: [], error: 'Timeout waiting for caption tracks' });
+      }, 15000);
     });
 
-    if (result.segments && result.segments.length > 0) {
-      console.log(`✅ Got ${result.segments.length} segments via ${result.method} (lang: ${result.language})`);
-      return result.segments;
-    }
-
-    // If MAIN world says use DOM capture, return special marker
-    if (result.method === 'dom_capture') {
-      console.log('📝 Tiers 1-2 empty, switching to DOM caption capture...');
+    if (!trackResult.tracks || trackResult.tracks.length === 0) {
+      console.log('📝 No caption tracks found, switching to DOM capture...');
       return { mode: 'dom_capture' };
     }
 
-    console.log('⚠️ All transcript tiers failed:', result.error || 'unknown');
-    return [];
+    console.log(`📝 Got ${trackResult.tracks.length} caption tracks, fetching via background...`);
+
+    // Step 2: Build URLs to try (signed baseUrl with different formats)
+    const urlsToFetch = [];
+    for (const track of trackResult.tracks) {
+      // Try multiple formats for each track
+      for (const fmt of ['srv1', 'json3', '']) {
+        const fmtSuffix = fmt ? `&fmt=${fmt}` : '';
+        urlsToFetch.push({
+          url: track.baseUrl + fmtSuffix,
+          lang: track.languageCode,
+          fmt: fmt || 'default',
+          kind: track.kind
+        });
+      }
+    }
+
+    // Step 3: Fetch via background service worker (has host_permissions, bypasses restrictions)
+    const bgResult = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'fetchCaptionUrls',
+        urls: urlsToFetch
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('📝 Background fetch error:', chrome.runtime.lastError.message);
+          resolve({ success: false, results: [] });
+        } else {
+          resolve(response);
+        }
+      });
+    });
+
+    if (bgResult.success && bgResult.results && bgResult.results.length > 0) {
+      // Parse the first successful result
+      for (const result of bgResult.results) {
+        const segments = parseTimedtextResponse(result.text);
+        if (segments.length > 0) {
+          console.log(`✅ Got ${segments.length} segments via background fetch (lang=${result.lang}, fmt=${result.fmt})`);
+          return segments;
+        }
+      }
+      console.log('📝 Background fetched caption data but parsing returned 0 segments');
+    } else {
+      console.log('📝 Background fetch returned no results');
+    }
+
+    // Step 4: If background fetch didn't work, try simple timedtext URLs
+    console.log('📝 Trying simple timedtext URLs via background...');
+    const languages = trackResult.tracks.map(t => t.languageCode);
+    const simpleUrls = [];
+    for (const lang of [...new Set(languages)]) {
+      for (const fmt of ['srv1', 'json3']) {
+        simpleUrls.push({
+          url: `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=${fmt}`,
+          lang: lang,
+          fmt: fmt
+        });
+      }
+      // Also try ASR
+      simpleUrls.push({
+        url: `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&kind=asr&fmt=json3`,
+        lang: lang,
+        fmt: 'asr-json3'
+      });
+    }
+
+    const simpleResult = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'fetchCaptionUrls',
+        urls: simpleUrls
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ success: false, results: [] });
+        } else {
+          resolve(response);
+        }
+      });
+    });
+
+    if (simpleResult.success && simpleResult.results && simpleResult.results.length > 0) {
+      for (const result of simpleResult.results) {
+        const segments = parseTimedtextResponse(result.text);
+        if (segments.length > 0) {
+          console.log(`✅ Got ${segments.length} segments via simple timedtext (lang=${result.lang}, fmt=${result.fmt})`);
+          return segments;
+        }
+      }
+    }
+
+    // All fetches failed, fall back to DOM capture
+    console.log('📝 All fetch approaches failed, switching to DOM capture...');
+    return { mode: 'dom_capture' };
+
   } catch (error) {
     console.error('Failed to fetch transcript:', error);
-    return [];
+    return { mode: 'dom_capture' };
   }
+}
+
+// Parse timedtext response (XML srv1 or JSON json3 format)
+function parseTimedtextResponse(text) {
+  const segments = [];
+
+  // Try XML (srv1 format)
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, 'text/xml');
+    const elements = doc.getElementsByTagName('text');
+    if (elements.length > 0) {
+      for (const el of elements) {
+        const t = el.textContent;
+        if (t && t.trim()) {
+          segments.push({
+            text: t.trim(),
+            start: parseFloat(el.getAttribute('start') || '0'),
+            duration: parseFloat(el.getAttribute('dur') || '0')
+          });
+        }
+      }
+      return segments;
+    }
+  } catch (e) {}
+
+  // Try JSON (json3 format)
+  try {
+    const data = JSON.parse(text);
+    if (data.events) {
+      for (const ev of data.events) {
+        if (ev.segs) {
+          const t = ev.segs.map(s => s.utf8 || '').join('');
+          if (t.trim()) {
+            segments.push({
+              text: t.trim(),
+              start: (ev.tStartMs || 0) / 1000,
+              duration: (ev.dDurationMs || 0) / 1000
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
+  return segments;
 }
 
 async function detectSpeakerGender() {
@@ -815,9 +962,19 @@ async function playNextAudio() {
 
 // Handler for live transcript chunks from audio capture
 // Handle DOM caption segments (Tier 3 - real-time captions from MutationObserver)
+// DOM capture buffering state
+let domCaptureBuffering = true;
+const DOM_CAPTURE_BUFFER_SIZE = 2; // Buffer 2 translated segments before switching audio
+let domCaptureTranslatedCount = 0;
+
 async function handleDomCaptionSegment(segment) {
   try {
     const { text, start } = segment;
+
+    // Filter out YouTube UI text that gets captured with captions
+    if (text.includes('(auto-generated)') || text.includes('Click  for settings') || text.includes('Click for settings')) {
+      return;
+    }
 
     // Deduplication
     const segId = `dom_${text}_${Math.floor(start)}`;
@@ -827,15 +984,60 @@ async function handleDomCaptionSegment(segment) {
     console.log(`🔤 DOM caption: "${text}" at ${start.toFixed(1)}s`);
 
     // Display in transcript panel
-    addTranscriptItem(text, start, start + 3);
+    const container = document.getElementById('transcript-body');
+    if (container) {
+      const seg = { text: text, start: start };
+      addTranscriptItem(transcript.length - 1, seg, container);
+    }
 
     // Translate if enabled
     if (settings.enableTranslation && settings.targetLanguage) {
       await processTranscript(text, start);
+
+      // Track translated segments for buffering
+      domCaptureTranslatedCount++;
+
+      // Once we have enough translations buffered, transition to translated audio
+      if (domCaptureBuffering && domCaptureTranslatedCount >= DOM_CAPTURE_BUFFER_SIZE) {
+        domCaptureBuffering = false;
+        console.log('✅ Translation buffer ready! Switching to translated audio...');
+
+        // Smoothly lower original video volume
+        if (youtubeVideo) {
+          fadeVideoVolume(youtubeVideo, youtubeVideo.volume, 0.05, 1000);
+        }
+
+        const statusText = document.getElementById('translation-status-text');
+        if (statusText) {
+          statusText.textContent = 'Translating captions in real-time...';
+        }
+      }
     }
   } catch (error) {
     console.error('❌ Error handling DOM caption:', error);
   }
+}
+
+// Smoothly fade video volume over a duration
+function fadeVideoVolume(video, fromVol, toVol, durationMs) {
+  const steps = 20;
+  const stepMs = durationMs / steps;
+  const volStep = (toVol - fromVol) / steps;
+  let currentStep = 0;
+
+  console.log(`🔉 Fading volume: ${fromVol.toFixed(2)} → ${toVol.toFixed(2)} over ${durationMs}ms`);
+
+  const fadeInterval = setInterval(() => {
+    currentStep++;
+    const newVol = Math.max(0, Math.min(1, fromVol + (volStep * currentStep)));
+    video.volume = newVol;
+
+    if (currentStep >= steps) {
+      video.volume = toVol;
+      clearInterval(fadeInterval);
+      console.log(`🔉 Volume fade complete: ${toVol.toFixed(2)}`);
+    }
+  }, stepMs);
 }
 
 async function handleLiveTranscript(transcriptChunk) {
@@ -2863,6 +3065,8 @@ function handleVideoChange() {
     transcriptionMode = 'none';
     liveTranscriptBuffer = [];
     detectedSourceLanguage = null;
+    domCaptureBuffering = true;
+    domCaptureTranslatedCount = 0;
 
     if ((settings.enableQA && settings.geminiApiKey) ||
         (settings.enableTranslation && settings.targetLanguage)) {

@@ -396,18 +396,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'playTranslatedAudio') {
     console.log('📨 Forwarding audio to offscreen document for playback');
 
-    // Forward to offscreen document
-    chrome.runtime.sendMessage({
-      action: 'playTranslatedAudio',
-      audioData: message.audioData,
-      text: message.text
-    }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error('❌ Failed to send audio to offscreen:', chrome.runtime.lastError.message);
-      } else {
-        console.log('✅ Audio forwarded to offscreen');
+    (async () => {
+      try {
+        // Ensure offscreen document exists before sending audio
+        await setupOffscreenDocument();
+
+        // Forward to offscreen document
+        chrome.runtime.sendMessage({
+          action: 'playTranslatedAudio',
+          audioData: message.audioData,
+          text: message.text
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error('❌ Failed to send audio to offscreen:', chrome.runtime.lastError.message);
+          } else {
+            console.log('✅ Audio forwarded to offscreen');
+          }
+        });
+      } catch (error) {
+        console.error('❌ Failed to setup offscreen for audio:', error);
       }
-    });
+    })();
 
     sendResponse({ success: true });
     return true;
@@ -551,6 +560,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         isCapturing
       });
     })();
+    return true;
+  }
+
+  // Handle caption URL fetch via background (bypasses YouTube's browser restrictions)
+  if (message.action === 'fetchCaptionUrl') {
+    const url = message.url;
+    console.log('📝 Background fetching caption URL:', url.substring(0, 80) + '...');
+
+    (async () => {
+      try {
+        const resp = await fetch(url);
+        const text = await resp.text();
+        console.log(`📝 Caption fetch result: status=${resp.status}, length=${text.length}`);
+        sendResponse({ success: true, text: text, status: resp.status });
+      } catch (e) {
+        console.error('❌ Caption fetch error:', e.message);
+        sendResponse({ success: false, error: e.message });
+      }
+    })();
+
+    return true;
+  }
+
+  // Handle fetching multiple caption URLs (batch)
+  if (message.action === 'fetchCaptionUrls') {
+    const urls = message.urls;
+    console.log('📝 Background batch-fetching', urls.length, 'caption URLs');
+
+    (async () => {
+      const results = [];
+      for (const urlInfo of urls) {
+        try {
+          const resp = await fetch(urlInfo.url);
+          const text = await resp.text();
+          console.log(`📝 Caption URL [${urlInfo.lang}] fmt=${urlInfo.fmt}: status=${resp.status}, length=${text.length}`);
+          if (text.length > 0) {
+            results.push({ text, lang: urlInfo.lang, fmt: urlInfo.fmt, status: resp.status });
+          }
+        } catch (e) {
+          console.log(`📝 Caption URL [${urlInfo.lang}] failed:`, e.message);
+        }
+      }
+      sendResponse({ success: true, results });
+    })();
+
     return true;
   }
 

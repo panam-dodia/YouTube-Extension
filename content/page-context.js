@@ -1,368 +1,344 @@
 // This script runs in the MAIN world (page's JS context)
-// It can access YouTube's JS variables and the player API
-// Tiered transcript strategy:
-//   Tier 1: get_transcript InnerTube endpoint (most reliable for ASR)
-//   Tier 2: timedtext API via captionTracks baseUrl (works for manual captions)
-//   Tier 3: DOM caption capture via MutationObserver (ultimate fallback)
-
-let domCaptureObserver = null;
-let domCaptureSegments = [];
+// It extracts caption track URLs from YouTube's player data
+// and sends them to the content script for background-fetched retrieval.
+//
+// Strategy:
+//   1. Extract captionTracks from ytInitialPlayerResponse / movie_player
+//   2. Send URLs back to content script (which routes through background service worker)
+//   3. If no caption tracks found, signal DOM capture mode
 
 window.addEventListener('message', async (event) => {
   if (event.source !== window) return;
 
   if (event.data?.type === 'TB_GET_TRANSCRIPT') {
     const videoId = event.data.videoId;
-    console.log('TalkBridge MAIN: Getting transcript for', videoId);
+    console.log('TalkBridge MAIN: Getting caption info for', videoId);
 
     try {
-      let segments = [];
+      const captionInfo = await extractCaptionInfo(videoId);
 
-      // Tier 1: get_transcript InnerTube endpoint
-      segments = await fetchViaGetTranscript(videoId);
-      if (segments.length > 0) {
-        console.log('TalkBridge MAIN: Tier 1 (get_transcript) returned', segments.length, 'segments');
-        window.postMessage({ type: 'TB_TRANSCRIPT_RESPONSE', segments: segments, language: 'auto', method: 'get_transcript' }, '*');
-        return;
+      if (captionInfo.tracks && captionInfo.tracks.length > 0) {
+        console.log('TalkBridge MAIN: Found', captionInfo.tracks.length, 'caption tracks');
+        window.postMessage({
+          type: 'TB_CAPTION_TRACKS',
+          tracks: captionInfo.tracks,
+          videoId: videoId
+        }, '*');
+      } else {
+        console.log('TalkBridge MAIN: No caption tracks found, signaling DOM capture');
+        window.postMessage({
+          type: 'TB_CAPTION_TRACKS',
+          tracks: [],
+          videoId: videoId,
+          error: 'No caption tracks found'
+        }, '*');
       }
-
-      // Tier 2: timedtext API via captionTracks
-      segments = await fetchViaTimedtext(videoId);
-      if (segments.length > 0) {
-        console.log('TalkBridge MAIN: Tier 2 (timedtext) returned', segments.length, 'segments');
-        window.postMessage({ type: 'TB_TRANSCRIPT_RESPONSE', segments: segments, language: 'auto', method: 'timedtext' }, '*');
-        return;
-      }
-
-      // Tier 3: Signal content script to use DOM caption capture
-      console.log('TalkBridge MAIN: Tiers 1-2 failed, signaling DOM caption capture mode');
-      window.postMessage({ type: 'TB_TRANSCRIPT_RESPONSE', segments: [], method: 'dom_capture', error: 'Tiers 1-2 returned no segments' }, '*');
-
     } catch (e) {
-      console.error('TalkBridge MAIN: Error:', e);
-      window.postMessage({ type: 'TB_TRANSCRIPT_RESPONSE', segments: [], error: e.message }, '*');
+      console.error('TalkBridge MAIN: Error extracting caption info:', e);
+      window.postMessage({
+        type: 'TB_CAPTION_TRACKS',
+        tracks: [],
+        videoId: videoId,
+        error: e.message
+      }, '*');
     }
   }
 
-  // DOM caption capture: start observing
   if (event.data?.type === 'TB_START_DOM_CAPTURE') {
     startDomCaptionCapture(event.data.videoId);
   }
 
-  // DOM caption capture: stop and return collected segments
   if (event.data?.type === 'TB_STOP_DOM_CAPTURE') {
     stopDomCaptionCapture();
   }
 });
 
 // ============================================================
-// Tier 1: get_transcript InnerTube endpoint
+// Extract caption track info from YouTube's player response
 // ============================================================
-async function fetchViaGetTranscript(videoId) {
-  try {
-    console.log('TalkBridge MAIN: Tier 1 - trying get_transcript endpoint...');
+async function extractCaptionInfo(videoId) {
+  const maxRetries = 8;
 
-    // Build protobuf params: field1=videoId, field2=language, field3=flag
-    const params = generateTranscriptParams(videoId, 'en');
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    console.log('TalkBridge MAIN: Attempt', attempt + 1, 'to get caption tracks...');
 
-    const response = await fetch('https://www.youtube.com/youtubei/v1/get_transcript', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Youtube-Client-Name': '3',
-        'X-Youtube-Client-Version': '19.45.4'
-      },
-      body: JSON.stringify({
-        context: {
-          client: {
-            hl: 'en',
-            gl: 'US',
-            clientName: 'IOS',
-            clientVersion: '19.45.4',
-            deviceModel: 'iPhone16,2',
-            userAgent: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)',
-            timeZone: 'UTC'
-          }
-        },
-        params: params
-      })
-    });
-
-    if (!response.ok) {
-      console.log('TalkBridge MAIN: get_transcript returned status', response.status);
-      // Log response body for debugging
-      try {
-        const errText = await response.text();
-        console.log('TalkBridge MAIN: get_transcript error body:', errText.substring(0, 300));
-      } catch (e) {}
-      return [];
+    // Try ytInitialPlayerResponse
+    if (window.ytInitialPlayerResponse?.videoDetails?.videoId === videoId) {
+      const tracks = window.ytInitialPlayerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (tracks && tracks.length > 0) {
+        console.log('TalkBridge MAIN: Found tracks via ytInitialPlayerResponse');
+        return buildTrackInfo(tracks);
+      }
     }
 
-    const data = await response.json();
-
-    // Parse the get_transcript response format
-    const segments = parseGetTranscriptResponse(data);
-    console.log('TalkBridge MAIN: get_transcript parsed', segments.length, 'segments');
-    return segments;
-
-  } catch (e) {
-    console.log('TalkBridge MAIN: get_transcript failed:', e.message);
-    return [];
-  }
-}
-
-function generateTranscriptParams(videoId, lang) {
-  // Protobuf encoding for get_transcript endpoint
-  // Structure: field1 (video_id string), field2 (language string), field3 (varint 1)
-  const encoder = new TextEncoder();
-  const videoIdBytes = encoder.encode(videoId);
-  const langBytes = encoder.encode(lang || 'en');
-
-  // Calculate total size
-  const totalSize = (2 + videoIdBytes.length) + (2 + langBytes.length) + 2;
-  const proto = new Uint8Array(totalSize);
-  let offset = 0;
-
-  // Field 1 (tag=0x0a): video_id (string, length-delimited)
-  proto[offset++] = 0x0a;
-  proto[offset++] = videoIdBytes.length;
-  proto.set(videoIdBytes, offset);
-  offset += videoIdBytes.length;
-
-  // Field 2 (tag=0x12): language (string, length-delimited)
-  proto[offset++] = 0x12;
-  proto[offset++] = langBytes.length;
-  proto.set(langBytes, offset);
-  offset += langBytes.length;
-
-  // Field 3 (tag=0x18): flag (varint = 1)
-  proto[offset++] = 0x18;
-  proto[offset++] = 0x01;
-
-  // Base64 encode
-  return btoa(String.fromCharCode(...proto));
-}
-
-function parseGetTranscriptResponse(data) {
-  const segments = [];
-
-  try {
-    // Navigate the response structure
-    const actions = data?.actions;
-    if (!actions) return segments;
-
-    for (const action of actions) {
-      const panel = action?.updateEngagementPanelAction?.content?.transcriptRenderer;
-      if (!panel) continue;
-
-      const body = panel?.body?.transcriptBodyRenderer;
-      if (!body) continue;
-
-      const cueGroups = body?.cueGroups;
-      if (!cueGroups) continue;
-
-      for (const group of cueGroups) {
-        const renderer = group?.transcriptCueGroupRenderer;
-        if (!renderer?.cues) continue;
-
-        for (const cue of renderer.cues) {
-          const cueRenderer = cue?.transcriptCueRenderer;
-          if (!cueRenderer) continue;
-
-          const text = cueRenderer.cue?.simpleText || '';
-          const startMs = parseInt(cueRenderer.startOffsetMs || '0', 10);
-          const durationMs = parseInt(cueRenderer.durationMs || '0', 10);
-
-          if (text.trim()) {
-            segments.push({
-              text: text.trim(),
-              start: startMs / 1000,
-              duration: durationMs / 1000
-            });
-          }
+    // Try movie_player.getPlayerResponse()
+    const player = document.getElementById('movie_player');
+    if (player?.getPlayerResponse) {
+      const resp = player.getPlayerResponse();
+      if (resp?.videoDetails?.videoId === videoId) {
+        const tracks = resp?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        if (tracks && tracks.length > 0) {
+          console.log('TalkBridge MAIN: Found tracks via movie_player');
+          return buildTrackInfo(tracks);
         }
       }
     }
-  } catch (e) {
-    console.error('TalkBridge MAIN: Error parsing get_transcript response:', e);
+
+    // Try ytplayer.config
+    if (window.ytplayer?.config?.args?.raw_player_response) {
+      const rawResp = window.ytplayer.config.args.raw_player_response;
+      if (rawResp?.videoDetails?.videoId === videoId) {
+        const tracks = rawResp?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        if (tracks && tracks.length > 0) {
+          console.log('TalkBridge MAIN: Found tracks via ytplayer.config');
+          return buildTrackInfo(tracks);
+        }
+      }
+    }
+
+    if (attempt < maxRetries - 1) {
+      await new Promise(r => setTimeout(r, 1000));
+    }
   }
 
-  return segments;
+  return { tracks: [] };
+}
+
+function buildTrackInfo(captionTracks) {
+  const tracks = captionTracks.map(track => ({
+    baseUrl: track.baseUrl,
+    languageCode: track.languageCode,
+    name: track.name?.simpleText || track.name?.runs?.[0]?.text || '',
+    kind: track.kind || '',
+    isTranslatable: track.isTranslatable || false,
+    vssId: track.vssId || ''
+  }));
+
+  // Sort: prefer English, then manual captions over ASR
+  tracks.sort((a, b) => {
+    const aEn = a.languageCode === 'en' || a.languageCode?.startsWith('en') ? 0 : 1;
+    const bEn = b.languageCode === 'en' || b.languageCode?.startsWith('en') ? 0 : 1;
+    if (aEn !== bEn) return aEn - bEn;
+    const aAsr = a.kind === 'asr' ? 1 : 0;
+    const bAsr = b.kind === 'asr' ? 1 : 0;
+    return aAsr - bAsr;
+  });
+
+  return { tracks };
 }
 
 // ============================================================
-// Tier 2: timedtext API via captionTracks baseUrl
+// DOM caption capture (Tier 3 fallback)
 // ============================================================
-async function fetchViaTimedtext(videoId) {
-  try {
-    console.log('TalkBridge MAIN: Tier 2 - trying timedtext API...');
+let domCaptureObserver = null;
+let domCaptureSegments = [];
+let captionContainerWatcher = null;
+let domCaptureActive = false;
+let lastCaptionText = '';
+let captionDebounceTimer = null;
 
-    // Get caption tracks from player (with retries for SPA navigation)
-    let captions = null;
-    const maxRetries = 5;
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      // Try ytInitialPlayerResponse
-      if (window.ytInitialPlayerResponse) {
-        const resp = window.ytInitialPlayerResponse;
-        if (resp.videoDetails?.videoId === videoId) {
-          captions = resp.captions?.playerCaptionsTracklistRenderer?.captionTracks || null;
-          if (captions) break;
-        }
-      }
-
-      // Try movie_player
-      const player = document.getElementById('movie_player');
-      if (player && player.getPlayerResponse) {
-        const response = player.getPlayerResponse();
-        if (response?.videoDetails?.videoId === videoId) {
-          captions = response?.captions?.playerCaptionsTracklistRenderer?.captionTracks || null;
-          if (captions) break;
-        }
-      }
-
-      if (attempt < maxRetries - 1) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    }
-
-    if (!captions || captions.length === 0) {
-      console.log('TalkBridge MAIN: No caption tracks found');
-      return [];
-    }
-
-    console.log('TalkBridge MAIN: Found', captions.length, 'caption track(s)');
-
-    const selectedTrack = captions.find(t =>
-      t.languageCode === 'en' || (t.languageCode && t.languageCode.startsWith('en'))
-    ) || captions[0];
-
-    // Try fetching caption content (srv1, json3, raw)
-    const formats = [
-      { name: 'srv1', suffix: '&fmt=srv1' },
-      { name: 'json3', suffix: '&fmt=json3' },
-      { name: 'raw', suffix: '' }
-    ];
-
-    for (const fmt of formats) {
-      const url = selectedTrack.baseUrl + fmt.suffix;
-      const resp = await fetch(url);
-      const text = await resp.text();
-
-      if (text.length === 0) continue;
-
-      // Try XML parse
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(text, 'text/xml');
-      const elements = doc.getElementsByTagName('text');
-      if (elements.length > 0) {
-        const segments = [];
-        for (const el of elements) {
-          segments.push({
-            text: el.textContent,
-            start: parseFloat(el.getAttribute('start')),
-            duration: parseFloat(el.getAttribute('dur'))
-          });
-        }
-        console.log('TalkBridge MAIN: timedtext', fmt.name, 'returned', segments.length, 'segments');
-        return segments;
-      }
-
-      // Try JSON parse
-      try {
-        const jsonData = JSON.parse(text);
-        if (jsonData.events) {
-          const segments = [];
-          for (const ev of jsonData.events) {
-            if (ev.segs) {
-              const t = ev.segs.map(s => s.utf8 || '').join('');
-              if (t.trim()) {
-                segments.push({
-                  text: t.trim(),
-                  start: (ev.tStartMs || 0) / 1000,
-                  duration: (ev.dDurationMs || 0) / 1000
-                });
-              }
-            }
-          }
-          if (segments.length > 0) {
-            console.log('TalkBridge MAIN: timedtext', fmt.name, 'JSON returned', segments.length, 'segments');
-            return segments;
-          }
-        }
-      } catch (e) { /* not JSON */ }
-    }
-
-    console.log('TalkBridge MAIN: timedtext returned empty for all formats');
-    return [];
-
-  } catch (e) {
-    console.log('TalkBridge MAIN: timedtext failed:', e.message);
-    return [];
+function isAdPlaying() {
+  // Check for YouTube ad indicators
+  // Note: .video-ads always exists on YouTube, so we must NOT use it
+  const player = document.querySelector('.html5-video-player');
+  if (player && player.classList.contains('ad-showing')) {
+    return true;
   }
+  // Check for ad overlay that only appears during actual ads
+  const adOverlay = document.querySelector('.ytp-ad-player-overlay');
+  return !!adOverlay;
 }
 
-// ============================================================
-// Tier 3: DOM caption capture via MutationObserver
-// ============================================================
 function startDomCaptionCapture(videoId) {
-  stopDomCaptionCapture(); // Clean up any existing observer
+  stopDomCaptionCapture();
   domCaptureSegments = [];
+  domCaptureActive = true;
 
   console.log('TalkBridge MAIN: Starting DOM caption capture for', videoId);
 
-  // Enable captions on the player if not already showing
+  // Enable captions
+  enableCaptions();
+
+  // Start a persistent watcher that continuously looks for caption containers
+  // This handles ad→video transitions where the container is destroyed and recreated
+  startCaptionContainerWatcher();
+}
+
+function enableCaptions() {
   const player = document.getElementById('movie_player');
+
+  // Try player API to enable captions
   if (player) {
-    // Try to enable captions
-    if (player.getOption && player.setOption) {
-      try {
+    try {
+      if (player.getOption && player.setOption) {
         const tracklist = player.getOption('captions', 'tracklist');
+        console.log('TalkBridge MAIN: Caption tracklist:', tracklist ? tracklist.length + ' tracks' : 'null');
         if (tracklist && tracklist.length > 0) {
           player.setOption('captions', 'track', tracklist[0]);
-          console.log('TalkBridge MAIN: Enabled caption track:', tracklist[0].languageCode || 'unknown');
+          console.log('TalkBridge MAIN: Enabled caption track via API');
         }
-      } catch (e) {
-        console.log('TalkBridge MAIN: Could not enable captions programmatically:', e.message);
       }
+    } catch (e) {
+      console.log('TalkBridge MAIN: player.setOption failed:', e.message);
     }
   }
 
-  // Watch for caption DOM changes
-  const captionContainer = document.querySelector('.ytp-caption-window-container') ||
-                           document.querySelector('.caption-window');
+  // Click the CC button to toggle captions on
+  const ccButton = document.querySelector('.ytp-subtitles-button');
+  if (ccButton) {
+    const isPressed = ccButton.getAttribute('aria-pressed');
+    console.log('TalkBridge MAIN: CC button found, aria-pressed:', isPressed);
+    if (isPressed === 'false') {
+      ccButton.click();
+      console.log('TalkBridge MAIN: Clicked CC button to enable captions');
+    }
+  } else {
+    console.log('TalkBridge MAIN: No CC button found');
+  }
+}
 
-  if (!captionContainer) {
-    console.log('TalkBridge MAIN: No caption container found in DOM');
-    window.postMessage({ type: 'TB_DOM_CAPTURE_STATUS', status: 'no_container' }, '*');
-    return;
+function startCaptionContainerWatcher() {
+  // Stop existing watcher
+  if (captionContainerWatcher) {
+    clearInterval(captionContainerWatcher);
   }
 
-  let lastText = '';
+  let currentContainer = null;
+
+  // Check every 2 seconds for caption container changes
+  // This handles: initial load, ad→video transitions, container recreation
+  captionContainerWatcher = setInterval(() => {
+    if (!domCaptureActive) {
+      clearInterval(captionContainerWatcher);
+      captionContainerWatcher = null;
+      return;
+    }
+
+    const container = document.querySelector('.ytp-caption-window-container');
+
+    if (container && container !== currentContainer) {
+      // New or changed container detected
+      console.log('TalkBridge MAIN: Caption container detected/changed, setting up observer');
+      currentContainer = container;
+
+      // Re-enable captions (might need re-enabling after ad)
+      enableCaptions();
+
+      // Set up observer on the new container
+      if (domCaptureObserver) {
+        domCaptureObserver.disconnect();
+      }
+      observeCaptionContainer(container);
+    } else if (!container && currentContainer) {
+      // Container was removed (ad transition)
+      console.log('TalkBridge MAIN: Caption container removed (likely ad transition), waiting for new one...');
+      currentContainer = null;
+      if (domCaptureObserver) {
+        domCaptureObserver.disconnect();
+        domCaptureObserver = null;
+      }
+    }
+  }, 2000);
+
+  // Also do an immediate check
+  setTimeout(() => {
+    const container = document.querySelector('.ytp-caption-window-container');
+    if (container) {
+      console.log('TalkBridge MAIN: Caption container found immediately');
+      observeCaptionContainer(container);
+    } else {
+      console.log('TalkBridge MAIN: No caption container yet, watcher will keep checking...');
+    }
+  }, 1500);
+}
+
+function observeCaptionContainer(captionContainer) {
+  // Disconnect previous observer
+  if (domCaptureObserver) {
+    domCaptureObserver.disconnect();
+  }
+
+  let lastSentText = '';
+  let pendingText = '';
+  let pendingTimer = null;
 
   domCaptureObserver = new MutationObserver(() => {
+    // Skip captions during ads
+    if (isAdPlaying()) return;
+
     const captionSegments = captionContainer.querySelectorAll('.ytp-caption-segment');
-    if (captionSegments.length === 0) return;
+    if (!captionSegments || captionSegments.length === 0) return;
 
     const currentText = Array.from(captionSegments).map(s => s.textContent).join(' ').trim();
-    if (!currentText || currentText === lastText) return;
-    lastText = currentText;
+    if (!currentText || currentText === lastCaptionText) return;
 
-    const video = document.querySelector('video');
-    const currentTime = video ? video.currentTime : 0;
+    // Filter out YouTube UI text
+    if (currentText.includes('(auto-generated)') || currentText.includes('for settings')) return;
 
-    domCaptureSegments.push({
-      text: currentText,
-      start: currentTime,
-      duration: 3 // Approximate duration
-    });
+    lastCaptionText = currentText;
+    pendingText = currentText;
 
-    // Send each captured segment to the content script in real-time
-    window.postMessage({
-      type: 'TB_DOM_CAPTION_SEGMENT',
-      segment: { text: currentText, start: currentTime, duration: 3 }
-    }, '*');
+    // Determine debounce delay based on whether text looks like a complete sentence
+    // Hindi sentence enders: । (purna viram), ? , ! , .
+    const endsWithPunctuation = /[।?!.\u0964]$/.test(currentText.trim());
+    const debounceMs = endsWithPunctuation ? 400 : 1200;
+
+    if (pendingTimer) clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => {
+      const video = document.querySelector('video');
+      const currentTime = video ? video.currentTime : 0;
+
+      if (isAdPlaying()) return;
+      if (!pendingText) return;
+
+      // Find the new (non-overlapping) part of this caption
+      const newText = extractNewText(lastSentText, pendingText);
+
+      // Require minimum 15 chars to avoid tiny fragments like "मोदी जी"
+      if (newText && newText.length >= 15) {
+        lastSentText = pendingText;
+        const segment = { text: newText, start: currentTime, duration: 3 };
+        domCaptureSegments.push(segment);
+
+        console.log('TalkBridge MAIN: Caption segment:', newText);
+
+        window.postMessage({
+          type: 'TB_DOM_CAPTION_SEGMENT',
+          segment: segment
+        }, '*');
+      }
+      pendingText = '';
+    }, debounceMs);
   });
+
+  // Extract only the NEW part of text, removing overlap with previously sent text.
+  // YouTube captions slide: end of prev overlaps start of new.
+  // e.g. prev: "ABC DEF GHI", new: "GHI JKL MNO" → extract "JKL MNO"
+  function extractNewText(prevText, newText) {
+    if (!prevText) return newText;
+    if (newText === prevText) return '';
+
+    // Case 1: newText starts with prevText (word-by-word building)
+    if (newText.startsWith(prevText)) {
+      const added = newText.substring(prevText.length).trim();
+      return added.length >= 5 ? newText : ''; // Wait for more if too short
+    }
+
+    // Case 2: Sliding window - find overlap where end of prev matches start of new
+    // Try progressively shorter suffixes of prevText
+    const prevWords = prevText.split(/\s+/);
+    for (let i = 1; i < prevWords.length; i++) {
+      const suffix = prevWords.slice(i).join(' ');
+      if (newText.startsWith(suffix)) {
+        // Found overlap - return only the new part after the overlap
+        const newPart = newText.substring(suffix.length).trim();
+        return newPart.length > 0 ? newPart : '';
+      }
+    }
+
+    // Case 3: Completely new text (no overlap at all)
+    return newText;
+  }
 
   domCaptureObserver.observe(captionContainer, {
     childList: true,
@@ -375,10 +351,20 @@ function startDomCaptionCapture(videoId) {
 }
 
 function stopDomCaptionCapture() {
+  domCaptureActive = false;
   if (domCaptureObserver) {
     domCaptureObserver.disconnect();
     domCaptureObserver = null;
-    console.log('TalkBridge MAIN: DOM caption observer stopped, captured', domCaptureSegments.length, 'segments');
   }
+  if (captionContainerWatcher) {
+    clearInterval(captionContainerWatcher);
+    captionContainerWatcher = null;
+  }
+  if (captionDebounceTimer) {
+    clearTimeout(captionDebounceTimer);
+    captionDebounceTimer = null;
+  }
+  lastCaptionText = '';
+  console.log('TalkBridge MAIN: DOM caption capture stopped, captured', domCaptureSegments.length, 'segments');
   domCaptureSegments = [];
 }
