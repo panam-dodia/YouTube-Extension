@@ -272,7 +272,14 @@ async function playTranslatedAudio(base64Audio, text) {
 
   playedAudioTexts.add(text);
 
-  // Add to queue
+  // Cap queue at 2 items to prevent latency buildup.
+  // If we're already behind, drop the oldest queued item (not yet playing)
+  // so we stay close to real-time instead of falling further behind.
+  if (audioPlaybackQueue.length >= 2) {
+    const dropped = audioPlaybackQueue.shift();
+    console.log('⏭️ [Offscreen] Queue full - dropping stale segment:', dropped.text.substring(0, 40));
+  }
+
   audioPlaybackQueue.push({ base64Audio, text });
 
   // Start playing if not already playing
@@ -322,6 +329,8 @@ async function playNextInQueue() {
     // Create buffer source
     const source = audioContext.createBufferSource();
     source.buffer = audioBuffer;
+
+    source.playbackRate.value = 1.0;
 
     // Create gain node
     const gainNode = audioContext.createGain();

@@ -253,54 +253,64 @@ function startCaptionContainerWatcher() {
 }
 
 function observeCaptionContainer(captionContainer) {
-  // Disconnect previous observer
   if (domCaptureObserver) {
     domCaptureObserver.disconnect();
   }
 
-  let lastSentText = '';  // Last text we actually sent
-  let pendingText = '';   // Text waiting to be sent (in debounce)
-  let pendingTime = 0;    // Timestamp when pending text was captured
-  let debounceTimer = null;
+  // lastWindowText: the full text of the last DOM capture (the sliding window)
+  // accumulated: new words we've extracted but not yet sent
+  // segmentStartTime: when the current accumulated chunk started
+  let lastWindowText = '';
+  let accumulated = '';
+  let segmentStartTime = 0;
+  let flushTimer = null;
+
+  // Extract only the NEW words from curr that weren't in prev.
+  // YouTube shows a sliding window: end of prev overlaps with start of curr.
+  // e.g. prev="A B C D E", curr="C D E F G" → new part is "F G"
+  function extractNew(prev, curr) {
+    if (!prev) return curr;
+    if (curr === prev) return '';
+
+    // Case 1: curr is just prev growing (more words at end)
+    if (curr.startsWith(prev)) {
+      return curr.slice(prev.length).trim();
+    }
+
+    // Case 2: sliding window - find longest suffix of prev that is a prefix of curr
+    const prevWords = prev.split(/\s+/);
+    for (let i = 1; i < prevWords.length; i++) {
+      const suffix = prevWords.slice(i).join(' ');
+      if (curr.startsWith(suffix)) {
+        return curr.slice(suffix.length).trim();
+      }
+    }
+
+    // Case 3: completely new line, no overlap
+    return curr;
+  }
 
   function sendSegment(text, time) {
-    if (!text || text.length < 3) return;
+    const clean = text.trim();
+    if (!clean || clean.length < 5) return;
     if (isAdPlaying()) return;
 
-    // Deduplicate against last sent
-    if (text === lastSentText) return;
-
-    lastSentText = text;
-    const segment = { text: text, start: time, duration: 3 };
+    lastCaptionText = clean;
+    const segment = { text: clean, start: time, duration: 3 };
     domCaptureSegments.push(segment);
 
-    console.log('TalkBridge MAIN: Caption segment:', text);
-
-    window.postMessage({
-      type: 'TB_DOM_CAPTION_SEGMENT',
-      segment: segment
-    }, '*');
+    console.log('TalkBridge MAIN: Caption segment:', clean);
+    window.postMessage({ type: 'TB_DOM_CAPTION_SEGMENT', segment }, '*');
   }
 
-  function isTextExtending(oldText, newText) {
-    // Check if newText is just oldText with more words appended
-    if (!oldText) return false;
-    return newText.startsWith(oldText);
-  }
-
-  function hasOverlap(oldText, newText) {
-    // Check if end of oldText overlaps with start of newText (sliding window)
-    if (!oldText) return false;
-    const oldWords = oldText.split(/\s+/);
-    for (let i = 1; i < oldWords.length; i++) {
-      const suffix = oldWords.slice(i).join(' ');
-      if (newText.startsWith(suffix)) return true;
+  function flushAccumulated() {
+    if (accumulated.trim().length >= 5) {
+      sendSegment(accumulated, segmentStartTime);
     }
-    return false;
+    accumulated = '';
   }
 
   domCaptureObserver = new MutationObserver(() => {
-    // Skip captions during ads
     if (isAdPlaying()) return;
 
     const captionSegments = captionContainer.querySelectorAll('.ytp-caption-segment');
@@ -308,8 +318,6 @@ function observeCaptionContainer(captionContainer) {
 
     const currentText = Array.from(captionSegments).map(s => s.textContent).join(' ').trim();
     if (!currentText || currentText === lastCaptionText) return;
-
-    // Filter out YouTube UI text
     if (currentText.includes('(auto-generated)') || currentText.includes('for settings')) return;
 
     lastCaptionText = currentText;
@@ -317,37 +325,29 @@ function observeCaptionContainer(captionContainer) {
     const video = document.querySelector('video');
     const currentTime = video ? video.currentTime : 0;
 
-    // Determine if this is the same caption line growing, or a completely new line
-    const extending = isTextExtending(pendingText, currentText);
-    const overlapping = !extending && hasOverlap(pendingText, currentText);
-    const isNewLine = !extending && !overlapping && pendingText && currentText !== pendingText;
+    // Extract only the truly new words
+    const newWords = extractNew(lastWindowText, currentText);
+    lastWindowText = currentText;
 
-    if (isNewLine) {
-      // YouTube switched to a completely new caption line.
-      // FLUSH the pending text immediately - don't let it get lost!
-      if (debounceTimer) {
-        clearTimeout(debounceTimer);
-        debounceTimer = null;
-      }
-      sendSegment(pendingText, pendingTime);
+    if (!newWords) return;
+
+    // Start timing the segment when we first get new words
+    if (!accumulated) segmentStartTime = currentTime;
+    accumulated += (accumulated ? ' ' : '') + newWords;
+
+    // Flush immediately if we hit sentence-ending punctuation
+    const endsWithPunctuation = /[।?!.\u0964]$/.test(accumulated.trim());
+    if (endsWithPunctuation) {
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      flushAccumulated();
+      return;
     }
 
-    // Update pending with current text
-    pendingText = currentText;
-    pendingTime = currentTime;
-
-    // Set debounce to send the text after it stops changing
-    // Shorter wait if sentence looks complete (ends with punctuation)
-    const endsWithPunctuation = /[।?!.\u0964]$/.test(currentText.trim());
-    const debounceMs = endsWithPunctuation ? 400 : 800;
-
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      if (pendingText) {
-        sendSegment(pendingText, pendingTime);
-        pendingText = '';
-      }
-    }, debounceMs);
+    // Otherwise wait a bit for more words before sending
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = setTimeout(() => {
+      flushAccumulated();
+    }, 1200);
   });
 
   domCaptureObserver.observe(captionContainer, {

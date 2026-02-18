@@ -103,7 +103,7 @@ class TTSService {
         },
         audioConfig: {
           audioEncoding: 'MP3',
-          speakingRate: 1.0,
+          speakingRate: 1.25,
           pitch: 0.0,
           volumeGainDb: 0.0
         }
