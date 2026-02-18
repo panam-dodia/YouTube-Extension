@@ -258,9 +258,46 @@ function observeCaptionContainer(captionContainer) {
     domCaptureObserver.disconnect();
   }
 
-  let lastSentText = '';
-  let pendingText = '';
-  let pendingTimer = null;
+  let lastSentText = '';  // Last text we actually sent
+  let pendingText = '';   // Text waiting to be sent (in debounce)
+  let pendingTime = 0;    // Timestamp when pending text was captured
+  let debounceTimer = null;
+
+  function sendSegment(text, time) {
+    if (!text || text.length < 3) return;
+    if (isAdPlaying()) return;
+
+    // Deduplicate against last sent
+    if (text === lastSentText) return;
+
+    lastSentText = text;
+    const segment = { text: text, start: time, duration: 3 };
+    domCaptureSegments.push(segment);
+
+    console.log('TalkBridge MAIN: Caption segment:', text);
+
+    window.postMessage({
+      type: 'TB_DOM_CAPTION_SEGMENT',
+      segment: segment
+    }, '*');
+  }
+
+  function isTextExtending(oldText, newText) {
+    // Check if newText is just oldText with more words appended
+    if (!oldText) return false;
+    return newText.startsWith(oldText);
+  }
+
+  function hasOverlap(oldText, newText) {
+    // Check if end of oldText overlaps with start of newText (sliding window)
+    if (!oldText) return false;
+    const oldWords = oldText.split(/\s+/);
+    for (let i = 1; i < oldWords.length; i++) {
+      const suffix = oldWords.slice(i).join(' ');
+      if (newText.startsWith(suffix)) return true;
+    }
+    return false;
+  }
 
   domCaptureObserver = new MutationObserver(() => {
     // Skip captions during ads
@@ -276,69 +313,42 @@ function observeCaptionContainer(captionContainer) {
     if (currentText.includes('(auto-generated)') || currentText.includes('for settings')) return;
 
     lastCaptionText = currentText;
-    pendingText = currentText;
 
-    // Determine debounce delay based on whether text looks like a complete sentence
-    // Hindi sentence enders: । (purna viram), ? , ! , .
-    const endsWithPunctuation = /[।?!.\u0964]$/.test(currentText.trim());
-    const debounceMs = endsWithPunctuation ? 400 : 1200;
+    const video = document.querySelector('video');
+    const currentTime = video ? video.currentTime : 0;
 
-    if (pendingTimer) clearTimeout(pendingTimer);
-    pendingTimer = setTimeout(() => {
-      const video = document.querySelector('video');
-      const currentTime = video ? video.currentTime : 0;
+    // Determine if this is the same caption line growing, or a completely new line
+    const extending = isTextExtending(pendingText, currentText);
+    const overlapping = !extending && hasOverlap(pendingText, currentText);
+    const isNewLine = !extending && !overlapping && pendingText && currentText !== pendingText;
 
-      if (isAdPlaying()) return;
-      if (!pendingText) return;
-
-      // Find the new (non-overlapping) part of this caption
-      const newText = extractNewText(lastSentText, pendingText);
-
-      // Require minimum 15 chars to avoid tiny fragments like "मोदी जी"
-      if (newText && newText.length >= 15) {
-        lastSentText = pendingText;
-        const segment = { text: newText, start: currentTime, duration: 3 };
-        domCaptureSegments.push(segment);
-
-        console.log('TalkBridge MAIN: Caption segment:', newText);
-
-        window.postMessage({
-          type: 'TB_DOM_CAPTION_SEGMENT',
-          segment: segment
-        }, '*');
+    if (isNewLine) {
+      // YouTube switched to a completely new caption line.
+      // FLUSH the pending text immediately - don't let it get lost!
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
       }
-      pendingText = '';
+      sendSegment(pendingText, pendingTime);
+    }
+
+    // Update pending with current text
+    pendingText = currentText;
+    pendingTime = currentTime;
+
+    // Set debounce to send the text after it stops changing
+    // Shorter wait if sentence looks complete (ends with punctuation)
+    const endsWithPunctuation = /[।?!.\u0964]$/.test(currentText.trim());
+    const debounceMs = endsWithPunctuation ? 400 : 800;
+
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      if (pendingText) {
+        sendSegment(pendingText, pendingTime);
+        pendingText = '';
+      }
     }, debounceMs);
   });
-
-  // Extract only the NEW part of text, removing overlap with previously sent text.
-  // YouTube captions slide: end of prev overlaps start of new.
-  // e.g. prev: "ABC DEF GHI", new: "GHI JKL MNO" → extract "JKL MNO"
-  function extractNewText(prevText, newText) {
-    if (!prevText) return newText;
-    if (newText === prevText) return '';
-
-    // Case 1: newText starts with prevText (word-by-word building)
-    if (newText.startsWith(prevText)) {
-      const added = newText.substring(prevText.length).trim();
-      return added.length >= 5 ? newText : ''; // Wait for more if too short
-    }
-
-    // Case 2: Sliding window - find overlap where end of prev matches start of new
-    // Try progressively shorter suffixes of prevText
-    const prevWords = prevText.split(/\s+/);
-    for (let i = 1; i < prevWords.length; i++) {
-      const suffix = prevWords.slice(i).join(' ');
-      if (newText.startsWith(suffix)) {
-        // Found overlap - return only the new part after the overlap
-        const newPart = newText.substring(suffix.length).trim();
-        return newPart.length > 0 ? newPart : '';
-      }
-    }
-
-    // Case 3: Completely new text (no overlap at all)
-    return newText;
-  }
 
   domCaptureObserver.observe(captionContainer, {
     childList: true,

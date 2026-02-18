@@ -527,8 +527,8 @@ async function fetchYouTubeTranscript(videoId) {
   try {
     // Strategy:
     //   1. MAIN world extracts caption track URLs from YouTube's player
-    //   2. We fetch those URLs via background service worker (bypasses browser restrictions)
-    //   3. If no tracks or all fetches empty, signal DOM capture mode
+    //   2. Send caption URL to our backend server to fetch server-side (no browser restrictions)
+    //   3. Fall back to DOM capture only if server fetch fails
     console.log('📝 Requesting caption tracks from MAIN world...');
 
     // Step 1: Get caption track URLs from MAIN world
@@ -548,102 +548,44 @@ async function fetchYouTubeTranscript(videoId) {
       }, 15000);
     });
 
-    if (!trackResult.tracks || trackResult.tracks.length === 0) {
-      console.log('📝 No caption tracks found, switching to DOM capture...');
-      return { mode: 'dom_capture' };
-    }
+    const bestTrack = trackResult.tracks && trackResult.tracks.length > 0 ? trackResult.tracks[0] : null;
 
-    console.log(`📝 Got ${trackResult.tracks.length} caption tracks, fetching via background...`);
-
-    // Step 2: Build URLs to try (signed baseUrl with different formats)
-    const urlsToFetch = [];
-    for (const track of trackResult.tracks) {
-      // Try multiple formats for each track
-      for (const fmt of ['srv1', 'json3', '']) {
-        const fmtSuffix = fmt ? `&fmt=${fmt}` : '';
-        urlsToFetch.push({
-          url: track.baseUrl + fmtSuffix,
-          lang: track.languageCode,
-          fmt: fmt || 'default',
-          kind: track.kind
-        });
-      }
-    }
-
-    // Step 3: Fetch via background service worker (has host_permissions, bypasses restrictions)
-    const bgResult = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({
-        action: 'fetchCaptionUrls',
-        urls: urlsToFetch
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.error('📝 Background fetch error:', chrome.runtime.lastError.message);
-          resolve({ success: false, results: [] });
-        } else {
-          resolve(response);
-        }
-      });
-    });
-
-    if (bgResult.success && bgResult.results && bgResult.results.length > 0) {
-      // Parse the first successful result
-      for (const result of bgResult.results) {
-        const segments = parseTimedtextResponse(result.text);
-        if (segments.length > 0) {
-          console.log(`✅ Got ${segments.length} segments via background fetch (lang=${result.lang}, fmt=${result.fmt})`);
-          return segments;
-        }
-      }
-      console.log('📝 Background fetched caption data but parsing returned 0 segments');
+    if (bestTrack) {
+      console.log(`📝 Got caption track (lang=${bestTrack.languageCode}, kind=${bestTrack.kind}), fetching via backend server...`);
     } else {
-      console.log('📝 Background fetch returned no results');
+      console.log('📝 No caption tracks found from player');
     }
 
-    // Step 4: If background fetch didn't work, try simple timedtext URLs
-    console.log('📝 Trying simple timedtext URLs via background...');
-    const languages = trackResult.tracks.map(t => t.languageCode);
-    const simpleUrls = [];
-    for (const lang of [...new Set(languages)]) {
-      for (const fmt of ['srv1', 'json3']) {
-        simpleUrls.push({
-          url: `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=${fmt}`,
-          lang: lang,
-          fmt: fmt
-        });
-      }
-      // Also try ASR
-      simpleUrls.push({
-        url: `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&kind=asr&fmt=json3`,
-        lang: lang,
-        fmt: 'asr-json3'
+    // Step 2: Fetch transcript via our backend server (server-side fetch, no YouTube restrictions)
+    try {
+      console.log('📝 Fetching transcript via backend server...');
+      const response = await fetch(`${API_URL}/api/translation/fetch-transcript`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videoId: videoId,
+          captionUrl: bestTrack?.baseUrl || null,
+          languageCode: bestTrack?.languageCode || null
+        })
       });
-    }
 
-    const simpleResult = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({
-        action: 'fetchCaptionUrls',
-        urls: simpleUrls
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          resolve({ success: false, results: [] });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.segments && data.segments.length > 0) {
+          console.log(`✅ Got ${data.segments.length} transcript segments from backend server`);
+          return data.segments;
         } else {
-          resolve(response);
+          console.log('📝 Backend server returned no segments:', data.error || 'unknown');
         }
-      });
-    });
-
-    if (simpleResult.success && simpleResult.results && simpleResult.results.length > 0) {
-      for (const result of simpleResult.results) {
-        const segments = parseTimedtextResponse(result.text);
-        if (segments.length > 0) {
-          console.log(`✅ Got ${segments.length} segments via simple timedtext (lang=${result.lang}, fmt=${result.fmt})`);
-          return segments;
-        }
+      } else {
+        console.log('📝 Backend server returned status:', response.status);
       }
+    } catch (serverError) {
+      console.log('📝 Backend server fetch failed:', serverError.message);
     }
 
-    // All fetches failed, fall back to DOM capture
-    console.log('📝 All fetch approaches failed, switching to DOM capture...');
+    // Step 3: Fall back to DOM capture
+    console.log('📝 Server-side fetch failed, switching to DOM capture...');
     return { mode: 'dom_capture' };
 
   } catch (error) {
@@ -1111,73 +1053,57 @@ async function processBufferedTranscripts() {
 // Process a single transcript (translation + TTS)
 async function processTranscript(text, timestamp) {
   try {
-    // Translate the text
-    console.log(`🌐 Translating to ${settings.targetLanguage}...`);
-    const response = await fetch(`${API_URL}/api/translation/translate`, {
+    // Skip stale segments - if the video has moved 30+ seconds past this caption, skip it
+    if (youtubeVideo && youtubeVideo.currentTime - timestamp > 30) {
+      console.log(`⏭️ Skipping stale segment (${(youtubeVideo.currentTime - timestamp).toFixed(0)}s behind): "${text.substring(0, 40)}..."`);
+      return;
+    }
+
+    // Combined translate + TTS in a single API call (saves a round trip)
+    console.log(`🌐 Translating + TTS to ${settings.targetLanguage}...`);
+    const response = await fetch(`${API_URL}/api/translation/translate-and-speak`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text: text,
-        targetLanguage: settings.targetLanguage
+        targetLanguage: settings.targetLanguage,
+        gender: detectedGender
       })
     });
 
     if (!response.ok) {
-      console.error('Translation failed:', response.statusText);
+      console.error('Translate+TTS failed:', response.statusText);
       return;
     }
 
     const data = await response.json();
     const translatedText = data.translatedText;
-    console.log(`✅ Translated: "${translatedText}"`);
+    const base64Audio = data.audioData;
+    console.log(`✅ Translated: "${translatedText}" (audio: ${(data.audioSize / 1024).toFixed(2)} KB)`);
 
-    // Generate audio for the translation
-    console.log(`🎤 Generating TTS audio in ${settings.targetLanguage}...`);
-    const audioResponse = await fetch(`${API_URL}/api/translation/text-to-speech`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: translatedText,
-        gender: detectedGender,
-        language: settings.targetLanguage
-      })
+    // Skip if segment became stale during the API call
+    if (youtubeVideo && youtubeVideo.currentTime - timestamp > 30) {
+      console.log(`⏭️ Skipping stale segment after API call: "${translatedText.substring(0, 40)}..."`);
+      return;
+    }
+
+    console.log('📤 Sending audio to offscreen document for playback...');
+
+    // Send audio to offscreen document to play
+    chrome.runtime.sendMessage({
+      action: 'playTranslatedAudio',
+      audioData: base64Audio,
+      text: translatedText
+    }, (resp) => {
+      if (chrome.runtime.lastError) {
+        console.error('❌ Failed to send audio to offscreen:', chrome.runtime.lastError.message);
+      } else {
+        console.log('✅ Audio sent to offscreen for playback');
+      }
     });
 
-    if (audioResponse.ok) {
-      const audioBlob = await audioResponse.blob();
-      console.log(`✅ TTS audio generated: ${(audioBlob.size / 1024).toFixed(2)} KB`);
-
-      // Convert blob to base64 for sending to offscreen document (optimized)
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      let binary = '';
-      const chunkSize = 0x8000; // Process in 32KB chunks for faster encoding
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-      }
-      const base64Audio = btoa(binary);
-
-      console.log('📤 Sending audio to offscreen document for playback...');
-
-      // Send audio to offscreen document to play (not captured by tab capture)
-      chrome.runtime.sendMessage({
-        action: 'playTranslatedAudio',
-        audioData: base64Audio,
-        text: translatedText
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.error('❌ Failed to send audio to offscreen:', chrome.runtime.lastError.message);
-        } else {
-          console.log('✅ Audio sent to offscreen for playback');
-        }
-      });
-
-      // Display the translation
-      displayLiveTranscript(text, translatedText, timestamp, false);
-
-    } else {
-      console.error('❌ TTS generation failed:', audioResponse.statusText);
-    }
+    // Display the translation
+    displayLiveTranscript(text, translatedText, timestamp, false);
 
   } catch (error) {
     console.error('❌ Error processing transcript:', error);
