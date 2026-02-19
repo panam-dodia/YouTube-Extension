@@ -45,7 +45,7 @@ window.addEventListener('message', async (event) => {
   }
 
   if (event.data?.type === 'TB_START_DOM_CAPTURE') {
-    startDomCaptionCapture(event.data.videoId);
+    startDomCaptionCapture(event.data.videoId, event.data.sourceLang || null, event.data.sourceVssId || null);
   }
 
   if (event.data?.type === 'TB_STOP_DOM_CAPTURE') {
@@ -114,11 +114,9 @@ function buildTrackInfo(captionTracks) {
     vssId: track.vssId || ''
   }));
 
-  // Sort: prefer English, then manual captions over ASR
+  // Sort: manual captions before ASR, no language preference
+  // (we want the original-language track, not English auto-translate)
   tracks.sort((a, b) => {
-    const aEn = a.languageCode === 'en' || a.languageCode?.startsWith('en') ? 0 : 1;
-    const bEn = b.languageCode === 'en' || b.languageCode?.startsWith('en') ? 0 : 1;
-    if (aEn !== bEn) return aEn - bEn;
     const aAsr = a.kind === 'asr' ? 1 : 0;
     const bAsr = b.kind === 'asr' ? 1 : 0;
     return aAsr - bAsr;
@@ -136,6 +134,9 @@ let captionContainerWatcher = null;
 let domCaptureActive = false;
 let lastCaptionText = '';
 let captionDebounceTimer = null;
+let captionHideStyle = null;
+let captureSourceLang = null;
+let captureSourceVssId = null;
 
 function isAdPlaying() {
   // Check for YouTube ad indicators
@@ -149,48 +150,78 @@ function isAdPlaying() {
   return !!adOverlay;
 }
 
-function startDomCaptionCapture(videoId) {
+function startDomCaptionCapture(videoId, sourceLang, sourceVssId) {
   stopDomCaptionCapture();
   domCaptureSegments = [];
   domCaptureActive = true;
+  captureSourceLang = sourceLang || null;
+  captureSourceVssId = sourceVssId || null;
 
-  console.log('TalkBridge MAIN: Starting DOM caption capture for', videoId);
+  console.log('TalkBridge MAIN: Starting DOM caption capture for', videoId, 'sourceLang:', captureSourceLang, 'vssId:', captureSourceVssId);
 
-  // Enable captions
-  enableCaptions();
+  // Enable captions (needed for DOM to be populated), but hide them visually
+  enableCaptions(captureSourceLang, captureSourceVssId);
+  hideCaptionsVisually();
 
   // Start a persistent watcher that continuously looks for caption containers
   // This handles ad→video transitions where the container is destroyed and recreated
   startCaptionContainerWatcher();
 }
 
-function enableCaptions() {
+function enableCaptions(sourceLang, sourceVssId) {
   const player = document.getElementById('movie_player');
 
-  // Try player API to enable captions
-  if (player) {
+  // Step 1: Select the right caption track (vssId is most direct)
+  if (player && player.setOption && sourceVssId) {
     try {
-      if (player.getOption && player.setOption) {
-        const tracklist = player.getOption('captions', 'tracklist');
-        console.log('TalkBridge MAIN: Caption tracklist:', tracklist ? tracklist.length + ' tracks' : 'null');
-        if (tracklist && tracklist.length > 0) {
-          player.setOption('captions', 'track', tracklist[0]);
-          console.log('TalkBridge MAIN: Enabled caption track via API');
-        }
+      player.setOption('captions', 'track', { vssId: sourceVssId });
+      console.log('TalkBridge MAIN: Set caption track via vssId:', sourceVssId);
+    } catch (e) {
+      console.log('TalkBridge MAIN: vssId track set failed:', e.message);
+    }
+  } else if (player && player.getOption && player.setOption) {
+    try {
+      const tracklist = player.getOption('captions', 'tracklist');
+      console.log('TalkBridge MAIN: Caption tracklist:', tracklist ? tracklist.length + ' tracks' : 'null');
+      if (tracklist && tracklist.length > 0) {
+        const track = sourceLang
+          ? (tracklist.find(t => t.languageCode === sourceLang) || tracklist[0])
+          : tracklist[0];
+        player.setOption('captions', 'track', track);
+        console.log('TalkBridge MAIN: Set caption track via tracklist:', track.languageCode);
       }
     } catch (e) {
-      console.log('TalkBridge MAIN: player.setOption failed:', e.message);
+      console.log('TalkBridge MAIN: tracklist API failed:', e.message);
     }
   }
 
-  // Click the CC button to toggle captions on
+  // Step 2: Always ensure CC button is ON — setOption alone may not enable it
   const ccButton = document.querySelector('.ytp-subtitles-button');
   if (ccButton) {
     const isPressed = ccButton.getAttribute('aria-pressed');
-    console.log('TalkBridge MAIN: CC button found, aria-pressed:', isPressed);
+    console.log('TalkBridge MAIN: CC button aria-pressed:', isPressed);
     if (isPressed === 'false') {
       ccButton.click();
       console.log('TalkBridge MAIN: Clicked CC button to enable captions');
+
+      // After CC is enabled, re-apply the track (clicking CC may revert to default language)
+      if (player && (sourceVssId || sourceLang)) {
+        setTimeout(() => {
+          try {
+            if (sourceVssId) {
+              player.setOption('captions', 'track', { vssId: sourceVssId });
+              console.log('TalkBridge MAIN: Re-applied vssId after CC enable:', sourceVssId);
+            } else {
+              const tracklist = player.getOption('captions', 'tracklist');
+              if (tracklist && tracklist.length > 0) {
+                const track = tracklist.find(t => t.languageCode === sourceLang) || tracklist[0];
+                player.setOption('captions', 'track', track);
+                console.log('TalkBridge MAIN: Re-applied language track after CC enable:', track.languageCode);
+              }
+            }
+          } catch (e) {}
+        }, 600);
+      }
     }
   } else {
     console.log('TalkBridge MAIN: No CC button found');
@@ -222,7 +253,7 @@ function startCaptionContainerWatcher() {
       currentContainer = container;
 
       // Re-enable captions (might need re-enabling after ad)
-      enableCaptions();
+      enableCaptions(captureSourceLang, captureSourceVssId);
 
       // Set up observer on the new container
       if (domCaptureObserver) {
@@ -277,23 +308,49 @@ function observeCaptionContainer(captionContainer) {
       return curr.slice(prev.length).trim();
     }
 
-    // Case 2: sliding window - find longest suffix of prev that is a prefix of curr
+    // Case 2: two-line caption — YouTube stacks old line above new line with double-space.
+    // e.g. prev="X.", curr="X.  Y." → new content is "Y."
+    // Take the LAST segment after any double-space, then recursively extract new from it.
+    if (curr.includes('  ')) {
+      const parts = curr.split(/\s{2,}/);
+      const lastPart = parts[parts.length - 1].trim();
+      if (lastPart && lastPart !== prev) {
+        return extractNew(prev, lastPart);
+      }
+    }
+
+    // Case 3: prev is embedded somewhere inside curr (window expanded backwards).
+    // Return everything that comes after prev in curr.
+    const embeddedIdx = curr.indexOf(prev);
+    if (embeddedIdx !== -1) {
+      return curr.slice(embeddedIdx + prev.length).trim();
+    }
+
+    // Case 4: sliding window — find longest suffix of prev that is a prefix of curr
     const prevWords = prev.split(/\s+/);
     for (let i = 1; i < prevWords.length; i++) {
       const suffix = prevWords.slice(i).join(' ');
-      if (curr.startsWith(suffix)) {
+      if (suffix.length > 4 && curr.startsWith(suffix)) {
         return curr.slice(suffix.length).trim();
       }
     }
 
-    // Case 3: completely new line, no overlap
+    // Case 5: completely new line, no detectable overlap
     return curr;
   }
+
+  let lastSentSegmentText = '';
 
   function sendSegment(text, time) {
     const clean = text.trim();
     if (!clean || clean.length < 5) return;
     if (isAdPlaying()) return;
+
+    // Skip if same as last sent (ignoring trailing punctuation) — prevents double-send
+    // when the period arrives just after a timeout-flush of the same words
+    const normalize = t => t.replace(/[।?!.\u0964\s]+$/, '').trim().toLowerCase();
+    if (normalize(clean) === normalize(lastSentSegmentText)) return;
+    lastSentSegmentText = clean;
 
     lastCaptionText = clean;
     const segment = { text: clean, start: time, duration: 3 };
@@ -333,7 +390,12 @@ function observeCaptionContainer(captionContainer) {
 
     // Start timing the segment when we first get new words
     if (!accumulated) segmentStartTime = currentTime;
-    accumulated += (accumulated ? ' ' : '') + newWords;
+    // If newWords is only punctuation, attach directly (no space) to avoid "text ."
+    if (/^[।?!.\u0964]+$/.test(newWords.trim())) {
+      accumulated = accumulated.trimEnd() + newWords.trim();
+    } else {
+      accumulated += (accumulated ? ' ' : '') + newWords;
+    }
 
     // Flush immediately if we hit sentence-ending punctuation
     const endsWithPunctuation = /[।?!.\u0964]$/.test(accumulated.trim());
@@ -375,6 +437,24 @@ function stopDomCaptionCapture() {
     captionDebounceTimer = null;
   }
   lastCaptionText = '';
+  showCaptionsVisually();
   console.log('TalkBridge MAIN: DOM caption capture stopped, captured', domCaptureSegments.length, 'segments');
   domCaptureSegments = [];
+}
+
+function hideCaptionsVisually() {
+  if (captionHideStyle) return;
+  captionHideStyle = document.createElement('style');
+  captionHideStyle.id = 'tb-caption-hide';
+  captionHideStyle.textContent = '.ytp-caption-window-container { opacity: 0 !important; }';
+  document.head.appendChild(captionHideStyle);
+  console.log('TalkBridge MAIN: Captions hidden visually');
+}
+
+function showCaptionsVisually() {
+  if (captionHideStyle) {
+    captionHideStyle.remove();
+    captionHideStyle = null;
+    console.log('TalkBridge MAIN: Captions restored');
+  }
 }

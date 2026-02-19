@@ -159,6 +159,9 @@ async function createFab() {
 
 // Initialize extension
 async function init() {
+  // Only run on YouTube
+  if (!window.location.hostname.includes('youtube.com')) return;
+
   const stored = await chrome.storage.sync.get({
     geminiApiKey: '',
     targetLanguage: '',
@@ -324,14 +327,19 @@ async function loadVideoFeatures() {
     // Try to fetch YouTube transcript first (if on YouTube)
     let hasTranscript = false;
     let useDomCapture = false;
+    let transcriptResult = null;
     if (isYouTube && currentVideoId && currentVideoId.startsWith('video_') === false) {
       try {
-        const transcriptResult = await fetchYouTubeTranscript(currentVideoId);
+        transcriptResult = await fetchYouTubeTranscript(currentVideoId);
 
         // Check if we got a DOM capture signal instead of segments
         if (transcriptResult && transcriptResult.mode === 'dom_capture') {
           useDomCapture = true;
-          console.log('📝 Will use DOM caption capture mode');
+          // Store source language from the detected track (more reliable than settings.sourceLanguage)
+          if (transcriptResult.sourceLang) {
+            detectedSourceLanguage = transcriptResult.sourceLang;
+          }
+          console.log('📝 Will use DOM caption capture mode, sourceLang:', transcriptResult.sourceLang, 'vssId:', transcriptResult.sourceVssId);
         } else if (Array.isArray(transcriptResult) && transcriptResult.length > 0) {
           transcript = transcriptResult;
           console.log(`✅ Fetched ${transcript.length} transcript segments`);
@@ -389,7 +397,11 @@ async function loadVideoFeatures() {
       transcriptText = '';
 
       // Tell MAIN world to start capturing captions from the DOM
-      window.postMessage({ type: 'TB_START_DOM_CAPTURE', videoId: currentVideoId }, '*');
+      // Use the vssId from the detected track — direct track selection without needing tracklist
+      const sourceLang = detectedSourceLanguage || null;
+      const sourceVssId = transcriptResult?.sourceVssId || null;
+      console.log('🔤 Starting DOM capture with sourceLang:', sourceLang, 'vssId:', sourceVssId);
+      window.postMessage({ type: 'TB_START_DOM_CAPTURE', videoId: currentVideoId, sourceLang, sourceVssId }, '*');
 
       // Listen for real-time caption segments from DOM observer
       if (!window._tbDomCaptureHandler) {
@@ -584,13 +596,17 @@ async function fetchYouTubeTranscript(videoId) {
       console.log('📝 Backend server fetch failed:', serverError.message);
     }
 
-    // Step 3: Fall back to DOM capture
+    // Step 3: Fall back to DOM capture — carry track info so DOM capture can enable the right language
     console.log('📝 Server-side fetch failed, switching to DOM capture...');
-    return { mode: 'dom_capture' };
+    return {
+      mode: 'dom_capture',
+      sourceLang: bestTrack?.languageCode || null,
+      sourceVssId: bestTrack?.vssId || null
+    };
 
   } catch (error) {
     console.error('Failed to fetch transcript:', error);
-    return { mode: 'dom_capture' };
+    return { mode: 'dom_capture', sourceLang: null, sourceVssId: null };
   }
 }
 
