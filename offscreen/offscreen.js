@@ -43,6 +43,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
     return true;
   }
+
+  if (message.action === 'clearAudioQueue') {
+    audioPlaybackQueue = [];
+    isPlayingTranslatedAudio = false;
+    console.log('🗑️ [Offscreen] Audio queue cleared');
+    sendResponse({ success: true });
+    return true;
+  }
 });
 
 async function startCapture(streamId, sourceLanguage = 'en', captureType = 'tab') {

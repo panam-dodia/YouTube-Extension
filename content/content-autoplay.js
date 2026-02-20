@@ -266,10 +266,23 @@ function startAdMonitoring() {
         isPlayingAudio = false;
       }
 
+      // Clear offscreen audio queue so translated audio doesn't play over the ad
+      chrome.runtime.sendMessage({ action: 'clearAudioQueue' });
+
+      // Restore video volume so the ad is audible
+      if (youtubeVideo) {
+        youtubeVideo.volume = 1.0;
+        console.log('🔊 Restored volume for ad');
+      }
+
       console.log('📺 Ad detected - paused translation and usage tracking');
     } else if (!adIsPlaying && lastAdState) {
-      // Ad just ended
+      // Ad just ended — re-arm buffering so volume gets muted again on next translation
       lastAdState = false;
+      domCaptureBuffering = true;
+      domCaptureTranslatedCount = 0;
+      domCaptureAudioBuffer = [];
+
       if (youtubeVideo && !youtubeVideo.paused) {
         chrome.runtime.sendMessage({ action: 'startUsageTracking' });
       }
@@ -922,8 +935,9 @@ async function playNextAudio() {
 // Handle DOM caption segments (Tier 3 - real-time captions from MutationObserver)
 // DOM capture buffering state
 let domCaptureBuffering = true;
-const DOM_CAPTURE_BUFFER_SIZE = 2; // Buffer 2 translated segments before switching audio
+const DOM_CAPTURE_BUFFER_SIZE = 3; // Pre-buffer 3 segments silently, then flush + start playback
 let domCaptureTranslatedCount = 0;
+let domCaptureAudioBuffer = []; // Holds {originalText, translatedText, base64Audio, timestamp} during pre-buffer
 
 async function handleDomCaptionSegment(segment) {
   try {
@@ -941,6 +955,15 @@ async function handleDomCaptionSegment(segment) {
 
     console.log(`🔤 DOM caption: "${text}" at ${start.toFixed(1)}s`);
 
+    // Skip very short fragments that don't end in punctuation — they're mid-sentence
+    // chunks that will be followed by a complete sentence anyway. Translating them
+    // wastes an API call and clogs the audio queue.
+    const endsWithPunctuation = /[।?!.\u0964]$/.test(text.trim());
+    if (text.trim().length < 20 && !endsWithPunctuation) {
+      console.log(`⏭️ Skipping short fragment: "${text}"`);
+      return;
+    }
+
     // Display in transcript panel
     const container = document.getElementById('transcript-body');
     if (container) {
@@ -950,25 +973,38 @@ async function handleDomCaptionSegment(segment) {
 
     // Translate if enabled
     if (settings.enableTranslation && settings.targetLanguage) {
-      await processTranscript(text, start);
+      if (domCaptureBuffering) {
+        // Pre-buffer phase: translate silently, don't send to offscreen yet
+        const buffered = await processTranscript(text, start, true);
+        if (buffered) {
+          domCaptureAudioBuffer.push(buffered);
+          domCaptureTranslatedCount++;
+          console.log(`📦 Pre-buffering segment ${domCaptureTranslatedCount}/${DOM_CAPTURE_BUFFER_SIZE}: "${buffered.translatedText.substring(0, 50)}"`);
 
-      // Track translated segments for buffering
-      domCaptureTranslatedCount++;
+          if (domCaptureTranslatedCount >= DOM_CAPTURE_BUFFER_SIZE) {
+            // Buffer full — flush all at once, then mute video
+            domCaptureBuffering = false;
+            console.log('✅ Pre-buffer ready! Flushing to offscreen and starting playback...');
 
-      // Once we have enough translations buffered, transition to translated audio
-      if (domCaptureBuffering && domCaptureTranslatedCount >= DOM_CAPTURE_BUFFER_SIZE) {
-        domCaptureBuffering = false;
-        console.log('✅ Translation buffer ready! Switching to translated audio...');
+            // Send all buffered segments to offscreen in one go
+            for (const item of domCaptureAudioBuffer) {
+              chrome.runtime.sendMessage({ action: 'playTranslatedAudio', audioData: item.base64Audio, text: item.translatedText }, () => {});
+              displayLiveTranscript(item.originalText, item.translatedText, item.timestamp, false);
+            }
+            domCaptureAudioBuffer = [];
 
-        // Smoothly lower original video volume
-        if (youtubeVideo) {
-          fadeVideoVolume(youtubeVideo, youtubeVideo.volume, 0.05, 1000);
+            // Mute video now that translated audio is queued
+            if (youtubeVideo) {
+              fadeVideoVolume(youtubeVideo, youtubeVideo.volume, 0, 500);
+            }
+            const statusText = document.getElementById('translation-status-text');
+            if (statusText) statusText.textContent = 'Translating captions in real-time...';
+          }
         }
-
-        const statusText = document.getElementById('translation-status-text');
-        if (statusText) {
-          statusText.textContent = 'Translating captions in real-time...';
-        }
+      } else {
+        // Normal phase: translate and send directly
+        await processTranscript(text, start);
+        domCaptureTranslatedCount++;
       }
     }
   } catch (error) {
@@ -1067,12 +1103,14 @@ async function processBufferedTranscripts() {
 }
 
 // Process a single transcript (translation + TTS)
-async function processTranscript(text, timestamp) {
+// If bufferOnly=true, returns {originalText, translatedText, base64Audio, timestamp} without
+// sending to offscreen — used during the pre-buffer phase.
+async function processTranscript(text, timestamp, bufferOnly = false) {
   try {
-    // Skip stale segments - if the video has moved 30+ seconds past this caption, skip it
-    if (youtubeVideo && youtubeVideo.currentTime - timestamp > 30) {
+    // Skip stale segments - if the video has moved 8+ seconds past this caption, skip it
+    if (youtubeVideo && youtubeVideo.currentTime - timestamp > 8) {
       console.log(`⏭️ Skipping stale segment (${(youtubeVideo.currentTime - timestamp).toFixed(0)}s behind): "${text.substring(0, 40)}..."`);
-      return;
+      return null;
     }
 
     // Combined translate + TTS in a single API call (saves a round trip)
@@ -1089,7 +1127,7 @@ async function processTranscript(text, timestamp) {
 
     if (!response.ok) {
       console.error('Translate+TTS failed:', response.statusText);
-      return;
+      return null;
     }
 
     const data = await response.json();
@@ -1098,9 +1136,14 @@ async function processTranscript(text, timestamp) {
     console.log(`✅ Translated: "${translatedText}" (audio: ${(data.audioSize / 1024).toFixed(2)} KB)`);
 
     // Skip if segment became stale during the API call
-    if (youtubeVideo && youtubeVideo.currentTime - timestamp > 30) {
+    if (youtubeVideo && youtubeVideo.currentTime - timestamp > 8) {
       console.log(`⏭️ Skipping stale segment after API call: "${translatedText.substring(0, 40)}..."`);
-      return;
+      return null;
+    }
+
+    // In buffer-only mode, return data for the caller to decide when to play
+    if (bufferOnly) {
+      return { originalText: text, translatedText, base64Audio, timestamp };
     }
 
     console.log('📤 Sending audio to offscreen document for playback...');
@@ -3009,6 +3052,7 @@ function handleVideoChange() {
     detectedSourceLanguage = null;
     domCaptureBuffering = true;
     domCaptureTranslatedCount = 0;
+    domCaptureAudioBuffer = [];
 
     if ((settings.enableQA && settings.geminiApiKey) ||
         (settings.enableTranslation && settings.targetLanguage)) {
