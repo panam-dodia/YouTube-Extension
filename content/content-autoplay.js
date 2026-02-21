@@ -965,7 +965,7 @@ async function handleDomCaptionSegment(segment) {
     }
 
     // Display in transcript panel
-    const container = document.getElementById('transcript-body');
+    const container = document.getElementById('transcript-list');
     if (container) {
       const seg = { text: text, start: start };
       addTranscriptItem(transcript.length - 1, seg, container);
@@ -1193,8 +1193,7 @@ function displayLiveTranscript(originalText, translatedText, timestamp, isTransc
     <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 4px;">
       <span style="font-size: 11px; color: #aaa;">${label} • ${time}</span>
     </div>
-    <div style="font-size: 13px; color: #ddd; margin-bottom: 4px;">${originalText}</div>
-    ${!isTranscriptionOnly ? `<div style="font-size: 14px; color: #fff; font-weight: 500;">${translatedText}</div>` : ''}
+    <div style="font-size: 14px; color: #fff; font-weight: 500;">${isTranscriptionOnly ? originalText : translatedText}</div>
   `;
 
   translationList.appendChild(item);
@@ -1372,23 +1371,43 @@ async function checkTrialStatus() {
     const trialData = await chrome.storage.local.get({
       trialEmail: null,
       installDate: null,
-      isRegistered: false
+      isRegistered: false,
+      deviceFingerprint: null
     });
 
     if (!trialData.trialEmail || !trialData.installDate) {
-      // Not registered yet
       isTrialExpired = true;
       isOnWaitlist = false;
       return;
     }
 
+    // Validate against backend (handles developer emails with unlimited trial)
+    try {
+      const validateRes = await fetch(`${API_URL}/api/trial/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: trialData.trialEmail,
+          deviceFingerprint: trialData.deviceFingerprint || 'unknown'
+        })
+      });
+      if (validateRes.ok) {
+        const data = await validateRes.json();
+        isTrialExpired = !data.isActive;
+        isOnWaitlist = isTrialExpired ? trialData.isRegistered : false;
+        console.log(`📅 Trial status: ${isTrialExpired ? 'EXPIRED' : 'ACTIVE'}, Days remaining: ${data.daysRemaining}, On waitlist: ${isOnWaitlist}`);
+        return;
+      }
+    } catch (fetchErr) {
+      console.warn('⚠️ Backend validate unreachable, falling back to local check');
+    }
+
+    // Fallback: local calculation
     const daysSinceInstall = Math.floor((Date.now() - trialData.installDate) / (1000 * 60 * 60 * 24));
     const daysRemaining = TRIAL_DAYS - daysSinceInstall;
-
     isTrialExpired = daysRemaining <= 0;
     isOnWaitlist = trialData.isRegistered;
-
-    console.log(`📅 Trial status: ${isTrialExpired ? 'EXPIRED' : 'ACTIVE'}, Days remaining: ${daysRemaining}, On waitlist: ${isOnWaitlist}`);
+    console.log(`📅 Trial status (local): ${isTrialExpired ? 'EXPIRED' : 'ACTIVE'}, Days remaining: ${daysRemaining}`);
   } catch (error) {
     console.error('Failed to check trial status:', error);
     isTrialExpired = false; // Default to allowing access on error
@@ -1592,6 +1611,9 @@ async function createUnifiedPanel() {
       if (e.key === 'Enter') sendQuestion();
     });
   }
+
+  // Set up transcript highlight tracking
+  setupTranscriptHighlight();
 }
 
 function switchTab(tabName) {
@@ -1602,6 +1624,41 @@ function switchTab(tabName) {
   document.querySelectorAll('.tab-content').forEach(content => {
     content.classList.toggle('active', content.id === `${tabName}-tab`);
   });
+}
+
+let transcriptHighlightListener = null;
+
+function setupTranscriptHighlight() {
+  if (!youtubeVideo) return;
+  if (transcriptHighlightListener) {
+    youtubeVideo.removeEventListener('timeupdate', transcriptHighlightListener);
+  }
+  transcriptHighlightListener = () => {
+    const list = document.getElementById('transcript-list');
+    if (!list) return;
+    // Only update when transcript tab is visible
+    const transcriptTab = document.getElementById('transcript-tab');
+    if (!transcriptTab || !transcriptTab.classList.contains('active')) return;
+
+    const items = list.querySelectorAll('.transcript-item[data-start]');
+    if (!items.length) return;
+
+    const currentTime = youtubeVideo.currentTime;
+    let activeItem = null;
+
+    for (const item of items) {
+      if (parseFloat(item.dataset.start) <= currentTime) {
+        activeItem = item;
+      }
+    }
+
+    items.forEach(i => i.classList.remove('active'));
+    if (activeItem) {
+      activeItem.classList.add('active');
+      activeItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  };
+  youtubeVideo.addEventListener('timeupdate', transcriptHighlightListener);
 }
 
 // Update audio mode button text based on playback state
@@ -1902,6 +1959,7 @@ function addTranscriptItem(index, segment, container) {
   const item = document.createElement('div');
   item.className = 'transcript-item';
   item.dataset.index = index;
+  item.dataset.start = segment.start;
   item.innerHTML = `
     <div class="timestamp">${formatTime(segment.start)}</div>
     <div class="transcript-text">${segment.text}</div>

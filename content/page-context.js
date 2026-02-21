@@ -159,9 +159,7 @@ function startDomCaptionCapture(videoId, sourceLang, sourceVssId) {
 
   console.log('TalkBridge MAIN: Starting DOM caption capture for', videoId, 'sourceLang:', captureSourceLang, 'vssId:', captureSourceVssId);
 
-  // Enable captions (needed for DOM to be populated), but hide them visually
-  enableCaptions(captureSourceLang, captureSourceVssId);
-  hideCaptionsVisually();
+  // Do NOT auto-enable captions — user controls the CC button themselves
 
   // Start a persistent watcher that continuously looks for caption containers
   // This handles ad→video transitions where the container is destroyed and recreated
@@ -251,9 +249,6 @@ function startCaptionContainerWatcher() {
       // New or changed container detected
       console.log('TalkBridge MAIN: Caption container detected/changed, setting up observer');
       currentContainer = container;
-
-      // Re-enable captions (might need re-enabling after ad)
-      enableCaptions(captureSourceLang, captureSourceVssId);
 
       // Set up observer on the new container
       if (domCaptureObserver) {

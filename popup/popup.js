@@ -162,11 +162,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Calculate trial status
-  const daysSinceInstall = Math.floor((Date.now() - trialData.installDate) / (1000 * 60 * 60 * 24));
-  const daysRemaining = TRIAL_DAYS - daysSinceInstall;
-  const isTrialActive = daysRemaining > 0;
-  const isRegistered = trialData.isRegistered;
+  // Calculate trial status — validate against backend first (handles developer emails)
+  let daysRemaining, isTrialActive, isRegistered;
+  try {
+    const fingerprint = trialData.deviceFingerprint || deviceInfo.hash;
+    const validateRes = await fetch(`${API_URL}/api/trial/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: trialData.trialEmail, deviceFingerprint: fingerprint })
+    });
+    if (validateRes.ok) {
+      const validateData = await validateRes.json();
+      daysRemaining = validateData.daysRemaining;
+      isTrialActive = validateData.isActive;
+      isRegistered = isTrialActive ? false : trialData.isRegistered; // dev/active users skip waitlist screen
+      console.log('✅ Backend trial validate:', validateData);
+    } else {
+      throw new Error('Validate failed');
+    }
+  } catch (e) {
+    // Fallback to local calculation if backend unreachable
+    const daysSinceInstall = Math.floor((Date.now() - trialData.installDate) / (1000 * 60 * 60 * 24));
+    daysRemaining = TRIAL_DAYS - daysSinceInstall;
+    isTrialActive = daysRemaining > 0;
+    isRegistered = trialData.isRegistered;
+    console.warn('⚠️ Using local trial calculation:', { daysRemaining, isTrialActive });
+  }
 
   // Get today's usage from background script (real-time)
   let usageMinutes = 0;

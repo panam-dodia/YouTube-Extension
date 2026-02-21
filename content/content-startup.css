@@ -540,8 +540,9 @@
   border-color: rgba(0, 212, 255, 0.2);
 }
 
-.translation-item.active {
-  background: linear-gradient(135deg, rgba(0, 212, 255, 0.05) 0%, rgba(10, 37, 64, 0.03) 100%);
+.translation-item.active,
+.transcript-item.active {
+  background: #1A1F28;
   border-color: var(--tb-accent);
   transform: scale(1.01);
   box-shadow: var(--tb-shadow-md), 0 0 0 3px rgba(0, 212, 255, 0.1);

@@ -117,6 +117,19 @@ router.post('/validate', async (req, res) => {
     const trialsData = fs.readFileSync(TRIALS_FILE, 'utf8');
     const trials = JSON.parse(trialsData);
 
+    // Developer emails always have an active trial
+    if (DEVELOPER_EMAILS.includes(email.toLowerCase())) {
+      console.log(`🔧 Developer email validated: ${email} - always active`);
+      return res.json({
+        email,
+        startedAt: new Date().toISOString(),
+        daysSinceStart: 0,
+        daysRemaining: 999,
+        isActive: true,
+        status: 'active'
+      });
+    }
+
     // Find trial
     const trial = trials.find(t => t.email === email && t.deviceFingerprint === deviceFingerprint);
 
