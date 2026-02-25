@@ -303,6 +303,117 @@ router.post('/fetch-transcript', async (req, res) => {
       }
     }
 
+    // Strategy 3: Fetch the YouTube watch page server-side → get a fresh server-IP-signed URL
+    if (transcriptSegments.length === 0) {
+      try {
+        console.log('📝 Strategy 3: Fetching watch page for server-signed caption URL...');
+        const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          }
+        });
+
+        if (pageRes.ok) {
+          const html = await pageRes.text();
+
+          // Extract ytInitialPlayerResponse JSON by counting braces (handles deeply nested JSON)
+          const marker = 'var ytInitialPlayerResponse = ';
+          const startIdx = html.indexOf(marker);
+          if (startIdx !== -1) {
+            let depth = 0, jsonEnd = -1;
+            const jsonStart = startIdx + marker.length;
+            for (let i = jsonStart; i < html.length; i++) {
+              if (html[i] === '{') depth++;
+              else if (html[i] === '}') { depth--; if (depth === 0) { jsonEnd = i + 1; break; } }
+            }
+            if (jsonEnd !== -1) {
+              const playerResponse = JSON.parse(html.substring(jsonStart, jsonEnd));
+              const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+              console.log(`📝 Watch page: found ${tracks.length} caption tracks`);
+
+              // Pick best track: match languageCode, prefer ASR for auto-generated, else first
+              const track = (languageCode ? tracks.find(t => t.languageCode === languageCode) : null)
+                || tracks.find(t => t.kind === 'asr')
+                || tracks[0];
+
+              if (track?.baseUrl) {
+                const captionRes = await fetch(`${track.baseUrl}&fmt=json3`, {
+                  headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                  }
+                });
+                if (captionRes.ok) {
+                  const captionText = await captionRes.text();
+                  if (captionText && captionText.length > 10) {
+                    const segments = parseTranscriptResponse(captionText, 'json3');
+                    if (segments.length > 0) {
+                      console.log(`✅ Strategy 3 got ${segments.length} segments (lang=${track.languageCode}, kind=${track.kind})`);
+                      transcriptSegments = segments;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.log('⚠️ Strategy 3 (watch page) failed:', e.message);
+      }
+    }
+
+    // Strategy 4: YouTube Innertube get_transcript API (doesn't use signed URLs)
+    if (transcriptSegments.length === 0) {
+      try {
+        console.log('📝 Strategy 4: Trying Innertube get_transcript API...');
+        const videoIdBytes = Buffer.from(videoId, 'utf8');
+        const paramsBytes = Buffer.concat([Buffer.from([0x0a, videoIdBytes.length]), videoIdBytes]);
+        const params = paramsBytes.toString('base64');
+
+        const innertubeRes = await fetch('https://www.youtube.com/youtubei/v1/get_transcript', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': 'https://www.youtube.com',
+            'Referer': `https://www.youtube.com/watch?v=${videoId}`,
+            'X-YouTube-Client-Name': '1',
+            'X-YouTube-Client-Version': '2.20231121.08.00',
+          },
+          body: JSON.stringify({
+            context: {
+              client: { clientName: 'WEB', clientVersion: '2.20231121.08.00', hl: 'en', gl: 'US' }
+            },
+            params
+          })
+        });
+
+        if (innertubeRes.ok) {
+          const data = await innertubeRes.json();
+          const cueGroups = data?.actions?.[0]?.updateEngagementPanelAction
+            ?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups || [];
+          const segments = cueGroups.flatMap(group =>
+            (group.transcriptCueGroupRenderer?.cues || []).map(cue => {
+              const r = cue.transcriptCueRenderer;
+              return {
+                text: r?.cue?.simpleText || '',
+                start: parseInt(r?.startOffsetMs || 0) / 1000,
+                duration: parseInt(r?.durationMs || 2000) / 1000
+              };
+            }).filter(s => s.text.trim())
+          );
+          if (segments.length > 0) {
+            console.log(`✅ Strategy 4 (Innertube) got ${segments.length} segments`);
+            transcriptSegments = segments;
+          }
+        }
+      } catch (e) {
+        console.log('⚠️ Strategy 4 (Innertube) failed:', e.message);
+      }
+    }
+
     if (transcriptSegments.length > 0) {
       res.json({
         success: true,

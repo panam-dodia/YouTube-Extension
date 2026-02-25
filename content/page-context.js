@@ -44,6 +44,18 @@ window.addEventListener('message', async (event) => {
     }
   }
 
+  if (event.data?.type === 'TB_GET_INNERTUBE_TRANSCRIPT') {
+    const videoId = event.data.videoId;
+    console.log('TalkBridge MAIN: Fetching Innertube transcript for', videoId);
+    try {
+      const segments = await fetchInnertubeTranscript(videoId);
+      window.postMessage({ type: 'TB_INNERTUBE_TRANSCRIPT', videoId, segments }, '*');
+    } catch (e) {
+      console.warn('TalkBridge MAIN: Innertube transcript failed:', e.message);
+      window.postMessage({ type: 'TB_INNERTUBE_TRANSCRIPT', videoId, segments: [], error: e.message }, '*');
+    }
+  }
+
   if (event.data?.type === 'TB_START_DOM_CAPTURE') {
     startDomCaptionCapture(event.data.videoId, event.data.sourceLang || null, event.data.sourceVssId || null);
   }
@@ -104,6 +116,100 @@ async function extractCaptionInfo(videoId) {
   return { tracks: [] };
 }
 
+// Parse cueGroups array from Innertube transcript response into segments
+function parseCueGroups(cueGroups) {
+  return cueGroups.flatMap(group =>
+    (group.transcriptCueGroupRenderer?.cues || []).map(cue => {
+      const r = cue.transcriptCueRenderer;
+      return {
+        text: r?.cue?.simpleText || '',
+        start: parseInt(r?.startOffsetMs || 0) / 1000,
+        duration: parseInt(r?.durationMs || 2000) / 1000
+      };
+    }).filter(s => s.text.trim())
+  );
+}
+
+// Fetch full transcript via YouTube's Innertube get_transcript API.
+// Runs in MAIN world (youtube.com origin) so cookies + API key are automatically included.
+// Strategy A: Extract directly from ytInitialData.engagementPanels (no API call needed)
+// Strategy B: Use YouTube's own pre-computed params from engagementPanels for the API call
+async function fetchInnertubeTranscript() {
+  const panels = window.ytInitialData?.engagementPanels || [];
+
+  // Strategy A: ytInitialData may already have the full transcript embedded
+  for (const panel of panels) {
+    const cueGroups = panel.engagementPanelSectionListRenderer
+      ?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups;
+    if (cueGroups && cueGroups.length > 0) {
+      const segments = parseCueGroups(cueGroups);
+      if (segments.length > 0) {
+        console.log(`TalkBridge MAIN: Strategy A — extracted ${segments.length} segments from ytInitialData`);
+        return segments;
+      }
+    }
+  }
+
+  // Strategy B: Use YouTube's pre-computed params (avoids FAILED_PRECONDITION)
+  let params = null;
+  for (const panel of panels) {
+    const subMenuItems = panel.engagementPanelSectionListRenderer
+      ?.header?.engagementPanelTitleHeaderRenderer
+      ?.menu?.sortFilterSubMenuRenderer?.subMenuItems || [];
+    for (const item of subMenuItems) {
+      const p = item?.serviceEndpoint?.getTranscriptEndpoint?.params;
+      if (p) { params = p; break; }
+    }
+    if (params) break;
+  }
+
+  if (!params) {
+    console.log('TalkBridge MAIN: No transcript params found in ytInitialData, giving up');
+    return [];
+  }
+
+  console.log('TalkBridge MAIN: Strategy B — using pre-computed params:', params.substring(0, 40));
+
+  const ytcfgGet = (key) => window.ytcfg?.get?.(key) ?? window.ytcfg?.data_?.[key];
+  const apiKey = ytcfgGet('INNERTUBE_API_KEY') || '';
+  const url = apiKey
+    ? `/youtubei/v1/get_transcript?key=${apiKey}&prettyPrint=false`
+    : `/youtubei/v1/get_transcript?prettyPrint=false`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      context: {
+        client: {
+          clientName: ytcfgGet('INNERTUBE_CLIENT_NAME') || 'WEB',
+          clientVersion: ytcfgGet('INNERTUBE_CLIENT_VERSION') || '2.20260225.01.00',
+          hl: ytcfgGet('HL') || 'en',
+          gl: ytcfgGet('GL') || 'US',
+          visitorData: ytcfgGet('VISITOR_DATA') || ''
+        }
+      },
+      params
+    })
+  });
+
+  const responseText = await response.text();
+  console.log(`TalkBridge MAIN: Strategy B response: status=${response.status}, body=${responseText.substring(0, 200)}`);
+
+  if (!response.ok) {
+    console.warn('TalkBridge MAIN: Strategy B failed:', response.status);
+    return [];
+  }
+
+  const data = JSON.parse(responseText);
+  const cueGroups = data?.actions?.[0]?.updateEngagementPanelAction
+    ?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups || [];
+
+  const segments = parseCueGroups(cueGroups);
+  console.log(`TalkBridge MAIN: Strategy B got ${segments.length} segments`);
+  return segments;
+}
+
 function buildTrackInfo(captionTracks) {
   const tracks = captionTracks.map(track => ({
     baseUrl: track.baseUrl,
@@ -137,6 +243,7 @@ let captionDebounceTimer = null;
 let captionHideStyle = null;
 let captureSourceLang = null;
 let captureSourceVssId = null;
+let ccToggleListener = null;
 
 function isAdPlaying() {
   // Check for YouTube ad indicators
@@ -159,11 +266,50 @@ function startDomCaptionCapture(videoId, sourceLang, sourceVssId) {
 
   console.log('TalkBridge MAIN: Starting DOM caption capture for', videoId, 'sourceLang:', captureSourceLang, 'vssId:', captureSourceVssId);
 
-  // Do NOT auto-enable captions — user controls the CC button themselves
+  // Enable CC so DOM observer has text to read, but hide it visually (opacity: 0)
+  // so it doesn't block the video. User sees nothing on screen.
+  enableCaptions(sourceLang, sourceVssId);
+  hideCaptionsVisually();
+
+  // Add CC button toggle listener after enableCaptions finishes its internal timers (600ms)
+  // This lets the user click CC to show/hide the original subtitle text
+  setTimeout(() => {
+    if (domCaptureActive) setupCCToggleListener(sourceLang, sourceVssId);
+  }, 800);
 
   // Start a persistent watcher that continuously looks for caption containers
   // This handles ad→video transitions where the container is destroyed and recreated
   startCaptionContainerWatcher();
+}
+
+function setupCCToggleListener(sourceLang, sourceVssId) {
+  removeCCToggleListener();
+  const ccButton = document.querySelector('.ytp-subtitles-button');
+  if (!ccButton) return;
+
+  ccToggleListener = () => {
+    // YouTube will turn CC off — we toggle our visual layer instead
+    if (captionHideStyle) {
+      showCaptionsVisually(); // was hidden → now show original subtitles
+    } else {
+      hideCaptionsVisually(); // was showing → hide again
+    }
+    // Re-enable CC after YouTube toggles it off (keeps DOM observer fed)
+    setTimeout(() => {
+      if (domCaptureActive) enableCaptions(sourceLang, sourceVssId);
+    }, 300);
+  };
+
+  ccButton.addEventListener('click', ccToggleListener);
+  console.log('TalkBridge MAIN: CC toggle listener attached');
+}
+
+function removeCCToggleListener() {
+  if (ccToggleListener) {
+    const ccButton = document.querySelector('.ytp-subtitles-button');
+    if (ccButton) ccButton.removeEventListener('click', ccToggleListener);
+    ccToggleListener = null;
+  }
 }
 
 function enableCaptions(sourceLang, sourceVssId) {
@@ -432,6 +578,7 @@ function stopDomCaptionCapture() {
     captionDebounceTimer = null;
   }
   lastCaptionText = '';
+  removeCCToggleListener();
   showCaptionsVisually();
   console.log('TalkBridge MAIN: DOM caption capture stopped, captured', domCaptureSegments.length, 'segments');
   domCaptureSegments = [];

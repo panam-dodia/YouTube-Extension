@@ -548,6 +548,32 @@ async function loadVideoFeatures() {
   }
 }
 
+// Parse YouTube caption response (JSON3 or SRV1/XML) into segments
+function parseCaptionResponse(text) {
+  const segments = [];
+  try {
+    if (text.trim().startsWith('{')) {
+      // JSON3 format
+      const data = JSON.parse(text);
+      for (const event of (data.events || [])) {
+        if (!event.segs) continue;
+        const segText = event.segs.map(s => s.utf8 || '').join('').trim();
+        if (!segText || segText === '\n') continue;
+        segments.push({ text: segText, start: (event.tStartMs || 0) / 1000, duration: (event.dDurationMs || 3000) / 1000 });
+      }
+    } else if (text.trim().startsWith('<')) {
+      // SRV1 XML format
+      const regex = /<text\s+start="([\d.]+)"\s+dur="([\d.]+)"[^>]*>([\s\S]*?)<\/text>/g;
+      let m;
+      while ((m = regex.exec(text)) !== null) {
+        const segText = m[3].replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/<[^>]+>/g,'').trim();
+        if (segText) segments.push({ text: segText, start: parseFloat(m[1]), duration: parseFloat(m[2]) });
+      }
+    }
+  } catch(e) { console.warn('Caption parse error:', e.message); }
+  return segments;
+}
+
 async function fetchYouTubeTranscript(videoId) {
   try {
     // Strategy:
@@ -576,41 +602,56 @@ async function fetchYouTubeTranscript(videoId) {
     const bestTrack = trackResult.tracks && trackResult.tracks.length > 0 ? trackResult.tracks[0] : null;
 
     if (bestTrack) {
-      console.log(`📝 Got caption track (lang=${bestTrack.languageCode}, kind=${bestTrack.kind}), fetching via backend server...`);
+      console.log(`📝 Got caption track (lang=${bestTrack.languageCode}, kind=${bestTrack.kind}), fetching via background service worker...`);
     } else {
       console.log('📝 No caption tracks found from player');
     }
 
-    // Step 2: Fetch transcript via our backend server (server-side fetch, no YouTube restrictions)
+    // Step 2: Try Innertube get_transcript via MAIN world (youtube.com origin — has cookies + API key)
     try {
-      console.log('📝 Fetching transcript via backend server...');
-      const response = await fetch(`${API_URL}/api/translation/fetch-transcript`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          videoId: videoId,
-          captionUrl: bestTrack?.baseUrl || null,
-          languageCode: bestTrack?.languageCode || null
-        })
+      console.log('📝 Trying Innertube transcript via MAIN world...');
+      const innertubeSegments = await new Promise((resolve) => {
+        const handler = (event) => {
+          if (event.source === window && event.data?.type === 'TB_INNERTUBE_TRANSCRIPT' && event.data.videoId === videoId) {
+            window.removeEventListener('message', handler);
+            resolve(event.data.segments || []);
+          }
+        };
+        window.addEventListener('message', handler);
+        window.postMessage({ type: 'TB_GET_INNERTUBE_TRANSCRIPT', videoId }, '*');
+        setTimeout(() => { window.removeEventListener('message', handler); resolve([]); }, 10000);
       });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success && data.segments && data.segments.length > 0) {
-          console.log(`✅ Got ${data.segments.length} transcript segments from backend server`);
-          return data.segments;
-        } else {
-          console.log('📝 Backend server returned no segments:', data.error || 'unknown');
-        }
-      } else {
-        console.log('📝 Backend server returned status:', response.status);
+      if (innertubeSegments.length > 0) {
+        console.log(`✅ Got ${innertubeSegments.length} segments via Innertube`);
+        return innertubeSegments;
       }
-    } catch (serverError) {
-      console.log('📝 Backend server fetch failed:', serverError.message);
+      console.log('📝 Innertube returned no segments, trying background fetch...');
+    } catch(e) {
+      console.log('📝 Innertube fetch failed:', e.message);
     }
 
-    // Step 3: Fall back to DOM capture — carry track info so DOM capture can enable the right language
-    console.log('📝 Server-side fetch failed, switching to DOM capture...');
+    // Step 3: Background service worker fetch (works for manually-uploaded captions)
+    if (bestTrack?.baseUrl) {
+      for (const fmt of ['json3', 'srv1']) {
+        try {
+          const url = `${bestTrack.baseUrl}&fmt=${fmt}`;
+          console.log(`📝 Background fetching captions (fmt=${fmt})...`);
+          const result = await chrome.runtime.sendMessage({ action: 'fetchCaptionUrl', url });
+          if (result?.success && result.text && result.text.length > 10) {
+            const segments = parseCaptionResponse(result.text);
+            if (segments.length > 0) {
+              console.log(`✅ Got ${segments.length} segments via background fetch (fmt=${fmt})`);
+              return segments;
+            }
+          }
+        } catch(e) {
+          console.log(`📝 Background fetch (fmt=${fmt}) failed:`, e.message);
+        }
+      }
+    }
+
+    // Step 4: Fall back to DOM capture
+    console.log('📝 All strategies failed, switching to DOM capture...');
     return {
       mode: 'dom_capture',
       sourceLang: bestTrack?.languageCode || null,

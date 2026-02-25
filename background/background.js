@@ -4,7 +4,9 @@ console.log('🌉 TalkBridge background service worker started');
 // Usage tracking
 let captureStartTime = null;
 let usageIntervalId = null;
+let activeTabId = null;
 const USAGE_UPDATE_INTERVAL = 1000; // Update every second
+const DAILY_LIMIT_SECONDS = 15 * 60; // 15 minutes
 
 // Helper function to get today's date string
 function getTodayDateString() {
@@ -30,18 +32,30 @@ async function updateUsage(seconds) {
 }
 
 // Start tracking usage
-function startUsageTracking() {
+function startUsageTracking(tabId) {
   if (usageIntervalId) {
     console.warn('⚠️ Usage tracking already running');
     return;
   }
 
+  activeTabId = tabId || null;
   captureStartTime = Date.now();
-  console.log('⏱️ Started usage tracking');
+  console.log('⏱️ Started usage tracking for tab:', activeTabId);
 
-  // Update usage every second
+  // Update usage every second and enforce limit mid-session
   usageIntervalId = setInterval(async () => {
-    await updateUsage(1);
+    const totalUsage = await updateUsage(1);
+    if (totalUsage >= DAILY_LIMIT_SECONDS && activeTabId) {
+      if (!(await isDeveloper())) {
+        console.warn('⚠️ Daily limit reached mid-session, stopping translation');
+        chrome.tabs.sendMessage(activeTabId, {
+          action: 'dailyLimitExceeded',
+          message: `You've used your daily limit of 15 minutes. Try again tomorrow!`,
+          minutesUsed: Math.floor(totalUsage / 60)
+        });
+        stopUsageTracking();
+      }
+    }
   }, USAGE_UPDATE_INTERVAL);
 }
 
@@ -60,9 +74,17 @@ async function stopUsageTracking() {
   }
 }
 
+// Developer emails bypass all usage limits
+const DEVELOPER_EMAILS = ['panamdodia945@gmail.com'];
+
+async function isDeveloper() {
+  const stored = await chrome.storage.local.get({ trialEmail: '' });
+  return DEVELOPER_EMAILS.includes((stored.trialEmail || '').toLowerCase());
+}
+
 // Check if user has exceeded daily limit
 async function checkDailyLimit() {
-  const DAILY_LIMIT_SECONDS = 15 * 60; // 15 minutes in seconds
+  if (await isDeveloper()) return false;
   const todayUsage = await getTodayUsage();
   return todayUsage >= DAILY_LIMIT_SECONDS;
 }
@@ -175,7 +197,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               console.log('✅ Offscreen document started capture');
 
               // Start usage tracking
-              startUsageTracking();
+              startUsageTracking(tabId);
 
               // Notify content script that capture has started
               chrome.tabs.sendMessage(tabId, {
@@ -244,7 +266,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             console.log('✅ Offscreen document started capture');
 
             // Start usage tracking
-            startUsageTracking();
+            startUsageTracking(message.tabId);
 
             // Notify content script that capture has started
             chrome.tabs.sendMessage(message.tabId, {
@@ -488,7 +510,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               console.log('✅ Desktop capture started in offscreen document');
 
               // Start usage tracking
-              startUsageTracking();
+              startUsageTracking(tabId);
 
               // Notify content script
               chrome.tabs.sendMessage(tabId, {
@@ -532,7 +554,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Handle start usage tracking request (for transcript-based translation)
   if (message.action === 'startUsageTracking') {
-    startUsageTracking();
+    startUsageTracking(sender.tab?.id);
     sendResponse({ success: true });
     return true;
   }
